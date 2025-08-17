@@ -1,2 +1,3 @@
-# Animal_Re-Identification_Model
-This repository contains the code for our Thesis Implementation.
+# Animal Re-Identification Model Implementation
+---
+This repository contains the code for our Thesis Implementation
