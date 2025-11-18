@@ -1,5 +1,6 @@
 import argparse
 from inspect_annot import inspect_annotations
+from utils import download_dataset
 
 parser = argparse.ArgumentParser(
     description='Federated Prototypical Network with Residual Networks and Atrous Spatial Pyramid Pooling for SeaTurtleID2022'
@@ -26,6 +27,18 @@ parser.add_argument(
     help="Display Project Overview"
 )
 
+parser.add_argument(
+    "-kie", "--kie-message",
+    action="store_true",
+    help="frankie's message",
+)
+
+parser.add_argument(
+    "-dd", "--download-dataset",
+    action="store_true",
+    help="Download the dataset"
+)
+
 if __name__ == "__main__":
     args = parser.parse_args()
 
@@ -45,3 +58,9 @@ if __name__ == "__main__":
         print("Project Overview: \n")
         print(overview_msg)
         print("="*len(overview_msg))
+
+    if args.kie_message:
+        print("u dont know how to update properly and you dont know how to clean.f")
+
+    if args.download_dataset:
+        download_dataset()

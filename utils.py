@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from tqdm import tqdm
+import os
 
 # Training Loop
 def train_one_epoch(
@@ -85,3 +86,23 @@ def evaluate_one_epoch(
     avg_acc = running_acc / max(num_episodes, 1)
 
     return avg_loss, avg_acc
+
+# Function to download dataset
+def download_dataset():
+    data_dir = "data"
+    dataset_dir = "turtle-data"
+    dataset_link = "https://github.com/lichclass/Animal_Re-Identification_Model/blob/main/downloads/turtle-data.zip"
+
+    if os.path.exists(data_dir):
+        print(f'Data Directory "{data_dir}" already exists. Skipping creation...')
+    else:
+        print(f"Creating Data Directory: {data_dir}")
+        os.makedirs(data_dir, exist_ok=True)
+
+    if os.path.exists(os.path.join(data_dir, dataset_dir)):
+        print(f'Dataset Directory "{dataset_dir}" already exists. Skipping creation...')
+    else:
+        print(f"Downloading Dataset: {dataset_dir} from {dataset_link}")
+        os.system(f"wget {dataset_link} -O {os.path.join(data_dir, dataset_dir)}.zip")
+        os.system(f"unzip {os.path.join(data_dir, dataset_dir)}.zip -d {data_dir}")
+        os.remove(os.path.join(data_dir, dataset_dir + ".zip"))
