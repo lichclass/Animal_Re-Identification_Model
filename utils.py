@@ -5,6 +5,8 @@ import torch.optim as optim
 
 from tqdm import tqdm
 import os
+import urllib.request
+import zipfile
 
 # Training Loop
 def train_one_epoch(
@@ -91,18 +93,47 @@ def evaluate_one_epoch(
 def download_dataset():
     data_dir = "data"
     dataset_dir = "turtle-data"
-    dataset_link = "https://github.com/lichclass/Animal_Re-Identification_Model/blob/main/downloads/turtle-data.zip"
+    
+    # ❗ Correct GitHub download URL for raw zip
+    dataset_link = "https://github.com/lichclass/Animal_Re-Identification_Model/raw/main/downloads/turtle-data.zip"
+    
+    zip_path = os.path.join(data_dir, f"{dataset_dir}.zip")
 
-    if os.path.exists(data_dir):
-        print(f'Data Directory "{data_dir}" already exists. Skipping creation...')
-    else:
+    # 1. Ensure root data directory exists
+    if not os.path.exists(data_dir):
         print(f"Creating Data Directory: {data_dir}")
         os.makedirs(data_dir, exist_ok=True)
-
-    if os.path.exists(os.path.join(data_dir, dataset_dir)):
-        print(f'Dataset Directory "{dataset_dir}" already exists. Skipping creation...')
     else:
-        print(f"Downloading Dataset: {dataset_dir} from {dataset_link}")
-        os.system(f"wget {dataset_link} -O {os.path.join(data_dir, dataset_dir)}.zip")
-        os.system(f"unzip {os.path.join(data_dir, dataset_dir)}.zip -d {data_dir}")
-        os.remove(os.path.join(data_dir, dataset_dir + ".zip"))
+        print(f'Data Directory "{data_dir}" already exists. Skipping creation...')
+
+    # 2. Skip if dataset already extracted
+    dataset_path = os.path.join(data_dir, dataset_dir)
+    if os.path.exists(dataset_path):
+        print(f'Dataset Directory "{dataset_dir}" already exists. Skipping download...')
+        return
+
+    # 3. Download zip file safely
+    print(f"Downloading Dataset: {dataset_dir} from {dataset_link}")
+    try:
+        urllib.request.urlretrieve(dataset_link, zip_path)
+        print("Download complete.")
+    except Exception as e:
+        print("Download FAILED:", e)
+        return
+
+    # 4. Extract zip
+    print("Extracting dataset...")
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(data_dir)
+        print("Extraction complete.")
+    except Exception as e:
+        print("Extraction FAILED:", e)
+        return
+    finally:
+        # 5. Clean up: remove zip file
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+            print("Cleaned up temporary zip file.")
+
+    print("Dataset is ready!")
