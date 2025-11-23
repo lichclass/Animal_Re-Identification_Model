@@ -10,7 +10,7 @@ parser.add_argument("-ov", "--overview", action="store_true", help="Display Proj
 parser.add_argument("-dd", "--download-dataset", action="store_true", help="Download the dataset")
 
 parser.add_argument("-mes", "--message", action="store_true", help="Message from the developers") # Small Easter Egg
-parser.add_argument("-kie", "--kie-message", action="store_true", help="frankie's message")
+parser.add_argument("-kie", "--kie-message", action="store_true", help="frankie's message") 
 
 if __name__ == "__main__":
     args = parser.parse_args()

@@ -89,30 +89,31 @@ def evaluate_one_epoch(
 
     return avg_loss, avg_acc
 
+
 # Function to download dataset
 def download_dataset():
     data_dir = "data"
     dataset_dir = "turtle-data"
     
-    # ❗ Correct GitHub download URL for raw zip
+    # GitHub download URL for raw zip
     dataset_link = "https://github.com/lichclass/Animal_Re-Identification_Model/raw/main/downloads/turtle-data.zip"
     
     zip_path = os.path.join(data_dir, f"{dataset_dir}.zip")
 
-    # 1. Ensure root data directory exists
+    # Ensure root data directory exists
     if not os.path.exists(data_dir):
         print(f"Creating Data Directory: {data_dir}")
         os.makedirs(data_dir, exist_ok=True)
     else:
         print(f'Data Directory "{data_dir}" already exists. Skipping creation...')
 
-    # 2. Skip if dataset already extracted
+    # Skip if dataset already extracted
     dataset_path = os.path.join(data_dir, dataset_dir)
     if os.path.exists(dataset_path):
         print(f'Dataset Directory "{dataset_dir}" already exists. Skipping download...')
         return
 
-    # 3. Download zip file safely
+    # Download zip file safely
     print(f"Downloading Dataset: {dataset_dir} from {dataset_link}")
     try:
         urllib.request.urlretrieve(dataset_link, zip_path)
@@ -121,7 +122,7 @@ def download_dataset():
         print("Download FAILED:", e)
         return
 
-    # 4. Extract zip
+    # Extract zip
     print("Extracting dataset...")
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -131,9 +132,14 @@ def download_dataset():
         print("Extraction FAILED:", e)
         return
     finally:
-        # 5. Clean up: remove zip file
+        # Clean up: remove zip file
         if os.path.exists(zip_path):
             os.remove(zip_path)
             print("Cleaned up temporary zip file.")
 
     print("Dataset is ready!")
+
+
+# Run Training and Evaluation
+def run_training():
+    

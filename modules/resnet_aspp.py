@@ -43,3 +43,7 @@ class ResNet18ASPPEncoder(nn.Module):
         x = self.fc(x)            # [B, embedding_dim]
         x = F.normalize(x, p=2, dim=1)
         return x
+
+    def display_info(self):
+        print("ResNet18 backbone -> ASPP -> AdaptiveAvgPool -> Linear -> L2-normalized embedding")
+
