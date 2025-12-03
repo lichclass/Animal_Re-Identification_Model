@@ -16,7 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # -------------------------------------------------------------
-# Class: Prototypical Loss Class Wrapper
+# Prototypical Loss Class Wrapper
 # -------------------------------------------------------------
 class PrototypicalLoss(nn.Module):
     def __init__(self, n_support):
@@ -28,7 +28,7 @@ class PrototypicalLoss(nn.Module):
 
 
 # -------------------------------------------------------------
-# Function: Euclidean Distance
+# Euclidean Distance
 # -------------------------------------------------------------
 def euclidean_distance(x, y):
     # x: N x D
@@ -47,89 +47,132 @@ def euclidean_distance(x, y):
 
 
 # -------------------------------------------------------------
-# Function: Split Embeddings into Support and Query sets
+# Compute Prototypes
+# -------------------------------------------------------------
+def compute_prototypes(embeddings, labels, n_support):
+    classes = torch.unique(labels)
+    prototypes = []
+
+    for c in classes:
+        idx = (labels == c).nonzero(as_tuple=False).squeeze(1)
+        support_idx = idx[:n_support]
+        proto = embeddings[support_idx].mean(dim=0)
+        prototypes.append(proto)
+
+    return torch.stack(prototypes, dim=0), classes
+
+# -------------------------------------------------------------
+# Split Support/Query
 # -------------------------------------------------------------
 def split_support_query(embeddings, labels, n_support):
     embeddings = embeddings.cpu()
     labels = labels.cpu()
 
-    classes = torch.unique(labels)
-    class_to_idx = {c.item(): idx for idx, c in enumerate(classes)}
+    prototypes, classes = compute_prototypes(embeddings, labels, n_support)
 
-    # Getting the Support Set
-    support_indices = []
+    # Map labels to episodic class indices
+    class_to_idx = {c.item(): i for i, c in enumerate(classes)}
+
+    # Query set
+    q_indices = []
     for c in classes:
-        class_indices = (labels == c).nonzero(as_tuple=False).squeeze(1)
-        support_indices.append(class_indices[:n_support])
+        idxs = (labels == c).nonzero(as_tuple=False).squeeze(1)
+        q_indices.append(idxs[n_support:])
 
-    # Getting the prototypes
-    prototypes = torch.stack(
-        [embeddings[idxs].mean(dim=0) for idxs in support_indices],
-        dim=0
-    )  # [n_classes, D]
+    q_indices = torch.cat(q_indices, dim=0)
 
-    # Getting the Query Set
-    query_indices_list = []
-    for c in classes:
-        class_indices = (labels == c).nonzero(as_tuple=False).squeeze(1)
-        class_query_indices = class_indices[n_support:]
-        query_indices_list.append(class_query_indices)
+    q_emb = embeddings[q_indices]
+    q_lbl = labels[q_indices]
+    q_lbl = torch.tensor([class_to_idx[l.item()] for l in q_lbl])
 
-    query_indices = torch.cat(query_indices_list, dim=0)
-    query_embeddings = embeddings[query_indices]   # [num_queries, D]
-    query_labels = labels[query_indices]           # [num_queries]
-
-    mapped_query_labels = torch.tensor(
-        [class_to_idx[label.item()] for label in query_labels]
-    )
-
-    return (
-        prototypes,
-        query_embeddings,
-        mapped_query_labels,
-        class_to_idx,
-        classes
-    )
+    return prototypes, q_emb, q_lbl, class_to_idx, classes
 
 
 # -------------------------------------------------------------
-# Function: Compute ProtoNet Loss
+# Compute ProtoNet Loss
 # -------------------------------------------------------------
 def compute_protonet_loss(prototypes, query_embeddings, query_labels):
-    # queries vs prototypes → [num_queries, n_classes]
     distances = euclidean_distance(query_embeddings, prototypes)
+    log_probs = F.log_softmax(-distances, dim=1)
 
-    log_probs = F.log_softmax(-distances, dim=1)   # softmax over classes
     loss = F.nll_loss(log_probs, query_labels)
 
-    preds = log_probs.argmax(dim=1)
-    acc = (preds == query_labels).float().mean()
-
-    return loss, acc, distances
-
-
-# -------------------------------------------------------------
-# Function: Prototypical Loss Pipeline
-# -------------------------------------------------------------
-def prototypical_loss(embeddings, labels, n_support):
-    """
-    Wrapper function for all the necessary steps to compute the Prototypical Loss
-    Steps:
-        1. Split embeddings into support and query sets
-        2. Compute prototypes
-        3. Compute distances + NLL loss
-        4. Compute accuracy
-    """ 
-    (
-        prototypes, 
-        query_embeddings, 
-        query_labels, 
-        class_to_idx, 
-        classes
-    ) = split_support_query(embeddings, labels, n_support) 
-
-    loss, acc, distances = compute_protonet_loss(
-        prototypes, query_embeddings, query_labels
-    )
+    pred = torch.argmax(log_probs, dim=1)
+    acc = (pred == query_labels).float().mean()
 
     return loss, acc
+
+
+# -------------------------------------------------------------
+# Prototypical Loss Wrapper
+# -------------------------------------------------------------
+def prototypical_loss(embeddings, labels, n_support):
+    (
+        prototypes,
+        query_embeddings,
+        query_labels,
+        class_to_idx,
+        classes
+    ) = split_support_query(embeddings, labels, n_support)
+
+    loss, acc = \
+        compute_protonet_loss(
+            prototypes, 
+            query_embeddings, 
+            query_labels
+        )
+
+    return loss, acc
+
+
+# -------------------------------------------------------------
+# Global Prototype Alignment Loss (FedProto)
+# -------------------------------------------------------------
+def compute_alignment_loss(
+    local_prototypes: torch.Tensor,
+    local_classes: torch.Tensor,
+    global_prototypes: torch.Tensor,
+    global_classes: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Compute alignment loss that pulls local prototypes toward global prototypes.
+    
+    Args:
+        local_prototypes: [n_local_classes, D] - local prototypes from current episode
+        local_classes: [n_local_classes] - class IDs for local prototypes
+        global_prototypes: [n_global_classes, D] - global prototypes from server
+        global_classes: [n_global_classes] - class IDs for global prototypes
+    
+    Returns:
+        alignment_loss: scalar tensor
+    """
+    if global_prototypes is None or len(global_prototypes) == 0:
+        return torch.tensor(0.0, device=local_prototypes.device)
+    
+    # Create mapping from class ID to global prototype index
+    global_class_to_idx = {
+        cls.item() if isinstance(cls, torch.Tensor) else cls: idx
+        for idx, cls in enumerate(global_classes)
+    }
+    
+    alignment_losses = []
+    
+    # For each local prototype, find matching global prototype and compute distance
+    for local_idx, local_class in enumerate(local_classes):
+        local_class_item = local_class.item() if isinstance(local_class, torch.Tensor) else local_class
+        
+        # Check if this class exists in global prototypes
+        if local_class_item in global_class_to_idx:
+            global_idx = global_class_to_idx[local_class_item]
+            local_proto = local_prototypes[local_idx]
+            global_proto = global_prototypes[global_idx]
+            
+            # L2 distance between local and global prototype
+            distance = torch.norm(local_proto - global_proto, p=2)
+            alignment_losses.append(distance)
+    
+    if len(alignment_losses) == 0:
+        return torch.tensor(0.0, device=local_prototypes.device)
+    
+    # Average alignment loss over matching classes
+    return torch.stack(alignment_losses).mean()

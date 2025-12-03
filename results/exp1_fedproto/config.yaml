@@ -5,11 +5,11 @@ data_dir: data/turtle-data
 device: cpu
 download_data: false
 embedding_dim: 256
-episodes: 1
-epochs: 1
-eval_episodes: 100
+episodes: 10
+epochs: 5
+eval_episodes: 10
 eval_every: 100
-experiment_name: exp1
+experiment_name: exp1_fedproto
 federated: true
 inspect_annotations: false
 inspect_metadata: false
@@ -26,5 +26,5 @@ rounds: 10
 save_results: false
 segment: turtle
 split_mode: closed
-test_episodes: 100
+test_episodes: 10
 train: true

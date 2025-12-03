@@ -3,17 +3,15 @@
 import os
 import torch
 import pandas as pd
+import subprocess
+import sys
 
 from config import get_config, save_config
 
 # Dataset utilities
 from utils import (
     download_dataset,
-    build_sea_turtle_metadata
-)
-
-# Inspection tools
-from inspects import (
+    build_sea_turtle_metadata,
     inspect_annotations,
     inspect_metadata
 )
@@ -22,7 +20,6 @@ from experiment import (
     without_federation,
     with_federation
 )
-
 
 def main():
     args = get_config()
@@ -67,10 +64,10 @@ def main():
     if args.train:
         if args.federated: 
             print("\nRunning Federated Prototypical Network...\n")
-            with_federation(args)
+            with_federation(args, verbose=True)
         else:
             print("\nRunning Non-Federated Prototypical Network...\n")
-            without_federation(args) # Non-federated (For ablation studies)
+            without_federation(args, verbose=True) # Non-federated (For ablation studies)
         return
 
 if __name__ == "__main__":

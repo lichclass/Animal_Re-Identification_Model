@@ -1,6 +1,7 @@
 import argparse
 import os
 import yaml
+import torch
 
 def get_config():
     parser = argparse.ArgumentParser(
@@ -41,7 +42,7 @@ def get_config():
     parser.add_argument("--n-way", type=int, default=5)
     parser.add_argument("--k-shot", type=int, default=5)
     parser.add_argument("--query", type=int, default=5)
-    parser.add_argument("--episodes", type=int, default=2000)
+    parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--test-episodes", type=int, default=100)
 
@@ -51,7 +52,9 @@ def get_config():
     
     # Federated Prototypical Network parameters
     parser.add_argument("--federated", action="store_true", help="Use Federated Prototypical Network")
-    parser.add_argument("--communication-rounds", type=int, default=10)
+    parser.add_argument("--rounds", type=int, default=10)
+    parser.add_argument("--lambda-align", type=float, default=0.5)
+    parser.add_argument("--num-clients", type=int, default=3)
 
     parser.add_argument(
         "--backbone",
@@ -68,6 +71,8 @@ def get_config():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--optimizer", type=str, choices=["adam", "sgd"], default="adam")
     parser.add_argument("--eval-every", type=int, default=100)
+    parser.add_argument("--device", type=str,
+                    default="cuda" if torch.cuda.is_available() else "cpu")
 
     # =========================================================
     # OUTPUT & LOGGING

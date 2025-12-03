@@ -6,7 +6,6 @@ import torch
 import torchvision.transforms as T
 import pandas as pd
 
-
 class SeaTurtleDataset(Dataset):
     """
     Dataset for SeaTurtleID2022 metadata_splits_* CSVs.

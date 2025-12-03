@@ -14,7 +14,13 @@ from PIL import Image
 import ast
 import matplotlib.pyplot as plt
 
-# Function to download dataset
+from collections import defaultdict
+import random
+
+
+# -------------------------------------------------------------
+# Function: downloads the dataset
+# -------------------------------------------------------------
 def download_dataset():
     data_dir = "data"
     dataset_dir = "turtle-data"
@@ -63,6 +69,10 @@ def download_dataset():
 
     print("Dataset is ready!")
 
+
+# -------------------------------------------------------------
+# Function: builds metadata splits for each segment
+# -------------------------------------------------------------
 # By: Elijah
 def build_sea_turtle_metadata(annotations, metadata, dataset_path):
     """
@@ -184,6 +194,10 @@ def build_sea_turtle_metadata(annotations, metadata, dataset_path):
     
     return metadata_turtle, metadata_flipper, metadata_head
 
+
+# -------------------------------------------------------------
+# Function: crop images on bounding boxes
+# -------------------------------------------------------------
 # By: Elijah
 def crop_turtle(turtle_id, metadata_path, dataset_path="data/turtle-data"):
     """
@@ -278,6 +292,10 @@ def crop_turtle(turtle_id, metadata_path, dataset_path="data/turtle-data"):
     print(f"Successfully cropped {len(cropped_results)} images for {turtle_id}")
     return cropped_results
 
+
+# -------------------------------------------------------------
+# Function: display cropped images in a grid
+# -------------------------------------------------------------
 # By: Elijah
 def display_cropped_images(cropped_results, max_display=10):
     """
@@ -328,3 +346,120 @@ def display_cropped_images(cropped_results, max_display=10):
     
     plt.tight_layout()
     plt.show()
+
+
+# -------------------------------------------------------------
+# Function: Compuate Top 1 & K Accuracy
+# -------------------------------------------------------------
+def compute_map(distances, labels, k=5):
+    """
+    distances: shape [num_queries, num_classes]
+    labels: ground truth class index per query
+
+    Args:
+        distances: torch tensor of shape [num_queries, num_classes]
+        labels: torch tensor of shape [num_queries]
+        k: for mAP@k
+
+    Returns:
+        mAP@1, mAP@k
+    """
+    ranks = distances.argsort(dim=1)   # [N, C]
+    
+    # top-1 accuracy
+    top1 = (ranks[:, 0] == labels).float().mean().item()
+    
+    # top-k accuracy (vectorized)
+    # ranks[:, :k] → [N, k]
+    # labels.unsqueeze(1) → [N, 1]
+    topk = (ranks[:, :k] == labels.unsqueeze(1)).any(dim=1).float().mean().item()
+    
+    return top1, topk
+
+
+# -------------------------------------------------------------
+# Function: display annotation information
+# -------------------------------------------------------------
+def inspect_annotations():
+
+    # Configurations
+    DATA_DIR = "data"
+    ANNOTATIONS_PATH = os.path.join(DATA_DIR, "turtle-data", "annotations.json")
+    sample_idx = 0 # the index of the sample to display
+
+    # Read the JSON file
+    with open(ANNOTATIONS_PATH, "r") as f:
+        annotations = json.load(f)
+
+    # For displaying information
+    file_size = os.path.getsize(ANNOTATIONS_PATH)
+    keys = list(annotations.keys())
+    categories = [{'id': c['id'], 'name': c['name']} for c in annotations['categories']]
+    sample_img = annotations["images"][sample_idx]
+    sample_annotations = annotations["annotations"][sample_idx]
+
+    print(f"""
+=====================================================
+SeaTurtleID2022 Dataset Annotations JSON Contents:
+=====================================================
+
+> JSON File Size: 
+    {file_size} bytes
+    {file_size / 1024} KB
+    {file_size / 1024 / 1024} MB
+
+> List of Keys: 
+    {keys}
+
+> List of Categories (count = {len(categories)}): 
+    {categories}
+
+> Sample Image Data (index: {sample_idx}): 
+    {sample_img}
+
+> Sample Annotation Data (index: {sample_idx}): 
+    {sample_annotations}
+
+=====================================================
+    """)
+
+
+# -------------------------------------------------------------
+# Function: display metadata information
+# -------------------------------------------------------------
+def inspect_metadata():
+
+    # Configurations
+    DATA_DIR = "data"
+    ANNOTATIONS_PATH = os.path.join(DATA_DIR, "turtle-data", "metadata_splits.csv")
+    samples_len = 5 # the number of samples to display
+
+    # Read the CSV file
+    data = pd.read_csv(ANNOTATIONS_PATH)
+
+    # For displaying information
+    file_size = os.path.getsize(ANNOTATIONS_PATH)
+    columns = list(data.columns)
+    num_of_data = len(data)
+
+    print(f"""
+=====================================================
+SeaTurtleID2022 Metadata Information
+=====================================================
+
+> CSV File Size:
+    {file_size} bytes
+    {file_size / 1024} KB
+    {file_size / 1024 / 1024} MB
+
+> Table Columns:
+    {columns}
+
+> Number of Data:
+    {num_of_data}
+
+> Sample Data:
+{data.head(samples_len)}
+
+=====================================================
+    """)
