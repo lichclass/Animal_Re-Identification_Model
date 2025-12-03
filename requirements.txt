@@ -25,8 +25,6 @@ decorator==5.2.1
 dill==0.3.8
 easyfsl==1.5.0
 executing==2.2.1
-# Editable install with no version control (fedproto==1.0.0)
--e /Users/lichclass/Documents/GitHub/Animal_Re-Identification_Model/fedproto
 filelock==3.19.1
 flwr-datasets==0.5.0
 fonttools==4.59.2
