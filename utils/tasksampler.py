@@ -1,20 +1,7 @@
-# ------------------------------------------------------------
-# File Name: tasksampler.py
-# Status: 🔧 READY FOR TESTING
-# Revised: November 26, 2025
-# Revised by: Nash Adam Muñoz
-# File Description: 
-#    This file contains the code for the evaluation metrics in 
-#    in evaluating the model.
-#
-# Changes:
-# - (November 26, 2025) renamed the class TaskSampler to
-#   FewShotTaskSampler.
-# ------------------------------------------------------------
-
 from collections import defaultdict
 import random
 import torch
+
 
 class FewShotTaskSampler:
     def __init__(self, labels, n_way, n_samples, iterations, allow_replacement=False):

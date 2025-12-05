@@ -1,19 +1,5 @@
-# ------------------------------------------------------------
-# File Name: metrics.py
-# Status: 🔧 READY FOR TESTING
-# Revised: November 26, 2025
-# Revised by: Nash Adam Muñoz
-# File Description: 
-#    This file contains the code for the evaluation metrics in 
-#    in evaluating the model.
-#
-# Changes:
-# - (November 26, 2025) changed the compute_map function to be
-#   more flexible from top1 and top5 accuracy only to 
-#   top1 and topk accuracy
-# ------------------------------------------------------------
-
 import torch
+
 
 def compute_map(distances, labels, k=5):
     """

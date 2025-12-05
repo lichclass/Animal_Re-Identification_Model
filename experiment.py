@@ -3,12 +3,13 @@ import copy
 import os
 import torch
 import pandas as pd
+import numpy as np
 
 from pathlib import Path
 
 # Preprocessing
-from dataset import SeaTurtleDataset
-from tasksampler import FewShotTaskSampler
+from utils.dataset import SeaTurtleDataset
+from utils.tasksampler import FewShotTaskSampler
 
 # ProtoNet components
 from modules.resnet_aspp import ResNet18ASPPEncoder
@@ -16,25 +17,20 @@ from modules.resnet18 import ResNet18Encoder
 from modules.protonetloss import PrototypicalLoss
 
 # Training / Evaluation
-from trainer import train_one_epoch
-from evaluator import evaluate_one_epoch
+from utils.evaluator import evaluate_one as eval_fn
 
 # Federation
 from fedproto.server import FedProtoServerApp
 from fedproto.client import FedProtoClientApp
 from fedproto.task import build_federated_splits
 
-# Parallelization
-from concurrent.futures import ThreadPoolExecutor
-
 
 # =========================================================
 # Function: Federated Mode
 # =========================================================
 def with_federation(args: argparse.Namespace, verbose=False):
-    # =========================================================
-    # 1. PREPROCESS DATA
-    # =========================================================
+
+    # Preprocess data
     (   
         train_dataset, 
         val_dataset, 
@@ -73,6 +69,7 @@ def with_federation(args: argparse.Namespace, verbose=False):
     client_splits = build_federated_splits(train_dataset, num_clients)
     print("     - ✓ Client splits ready")
 
+
     # Setup Global Model
     encoder = None
     if backbone == "resnet18_aspp":
@@ -83,6 +80,10 @@ def with_federation(args: argparse.Namespace, verbose=False):
         raise ValueError(f"Unknown backbone: {backbone}")
     global_model = encoder.to(device) 
 
+    global_model_msg = {
+        'server': 'global',
+        'model_weights': global_model.state_dict()
+    }
     clients = []
     for i in range(num_clients):
         train_loader = torch.utils.data.DataLoader(
@@ -103,7 +104,7 @@ def with_federation(args: argparse.Namespace, verbose=False):
             lambda_align=lambda_align,
             lr=lr,
         ))
-        clients[i].set_model_weights(global_model.state_dict())
+        clients[i].set_model_weights(global_model_msg)
 
     print("     - ✓ Clients ready")
 
@@ -128,14 +129,15 @@ def with_federation(args: argparse.Namespace, verbose=False):
 
         # Run local episodic loop for n number of episodes
         for client in clients:
-            loss, acc = client.fit()
-            print(f"(Client {client.cid}) Train Loss: {loss:.4f} | Train Acc: {acc*100:0.2f}%")
+            client_msg = client.fit()
+            print(f"(Client {client_msg['client']}) Train Loss: {client_msg['loss']:.4f} | Train Acc: {client_msg['acc']*100:0.2f}%")
             
         # Get the prototypes from the clients
         client_protos = {}
         for client in clients:
-            client_protos[client.cid] = client.get_local_prototypes()
-            print(f"     - ✓ Client {client.cid} prototypes ready")
+            client_msg = client.get_local_prototypes()
+            client_protos[client_msg['client']] = client_msg['prototypes']
+            print(f"     - ✓ Client {client_msg['client']} prototypes ready")
 
         # Sends the prototypes to the server and aggregate
         global_prototypes = server.aggregate(client_protos)
@@ -146,29 +148,51 @@ def with_federation(args: argparse.Namespace, verbose=False):
             client.set_global_prototypes(global_prototypes)
         print('     - ✓ Global prototypes sent to clients')
 
-        server.fedAvg(clients)
-        print("     - ✓ Global model weights updated and sent to clients")
+        # server.fedAvg(clients)
+        # print("     - ✓ Global model weights updated and sent to clients")
 
-        print(f"Evaluating the Global Model...")
-        mAP, _, _ = server.evaluate(val_dataset)
-        
-        if mAP > best_val_mAP:
-            best_val_mAP = mAP
-            best_model = copy.deepcopy(server.global_encoder.state_dict())
-            # Save the best model
-            model_path = results_dir / f"best_global_model.pth"
-            torch.save(server.global_encoder.state_dict(), model_path)
-            print(f"     - ✓ New best model saved at round {round+1} with VAL mAP@1: {best_val_mAP*100:.2f}%")
-            early_stopping_counter = 0
-        else:
-            early_stopping_counter += 1
+        chosen_client = np.random.choice(clients)
+        print(f"(Validation) Evaluating a chosen model (Client {chosen_client.cid})...")
+        loss, acc = eval_fn(
+            model=chosen_client.model,
+            eval_dataset=val_dataset,
+            task_sampler=val_sampler,
+            n_support=k_shot,
+            device=device
+        )
+        print(f"     - ✓ VAL Loss: {loss:.4f} | VAL Acc: {acc*100:.2f}%")
+
+        return
+        # if mAP > best_val_mAP:
+        #     best_val_mAP = mAP
+        #     best_model = copy.deepcopy(server.global_encoder.state_dict())
+        #     # Save the best model
+        #     model_path = results_dir / f"best_global_model.pth"
+        #     torch.save(server.global_encoder.state_dict(), model_path)
+        #     print(f"     - ✓ New best model saved at round {round+1} with VAL mAP@1: {best_val_mAP*100:.2f}%")
+        #     early_stopping_counter = 0
+        # else:
+        #     early_stopping_counter += 1
     
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # if torch.cuda.is_available():
+        #     torch.cuda.empty_cache()
+
+    chosen_client = np.random.choice(clients)
+    print(f"(Test) Evaluating a chosen model (Client {chosen_client.cid})...")
+    loss, acc = eval_fn(
+        model=chosen_client.model,
+        eval_dataset=test_dataset,
+        task_sampler=test_sampler,
+        n_support=k_shot,
+        device=device
+    )
+    print(f"     - ✓ TEST Loss: {loss:.4f} | TEST Acc: {acc*100:.2f}%")
+    return
+
 
     # Testing the best model on test set
     print("\nTesting the Best Global Model on Test Set...")
-    server.global_encoder.load_state_dict(best_model)
+    # server.global_encoder.load_state_dict(best_model)
     mAP, rank1, rank5 = server.evaluate(test_dataset)
 
     # Write results to file
@@ -185,110 +209,110 @@ def with_federation(args: argparse.Namespace, verbose=False):
 def without_federation(args: argparse.Namespace, verbose=False):
     pass
 
-    # Preprocess data
-    (
-        train_dataset, 
-        val_dataset, 
-        test_dataset, 
-        train_sampler, 
-        val_sampler, 
-        test_sampler
-    ) = preprocess_data(args)
+    # # Preprocess data
+    # (
+    #     train_dataset, 
+    #     val_dataset, 
+    #     test_dataset, 
+    #     train_sampler, 
+    #     val_sampler, 
+    #     test_sampler
+    # ) = preprocess_data(args)
 
-    if verbose:
-        print("\n✓ Dataset and samplers initialized\n")
+    # if verbose:
+    #     print("\n✓ Dataset and samplers initialized\n")
 
-    # =========================================================
-    # BUILD MODEL
-    # =========================================================
+    # # =========================================================
+    # # BUILD MODEL
+    # # =========================================================
     
-    if verbose:
-        print("===============================")
-        print("BUILDING THE MODEL")
-        print("===============================\n")
+    # if verbose:
+    #     print("===============================")
+    #     print("BUILDING THE MODEL")
+    #     print("===============================\n")
 
-    if args.backbone == "resnet18":
-        encoder = ResNet18Encoder(embedding_dim=args.embedding_dim)
-    else:
-        encoder = ResNet18ASPPEncoder(embedding_dim=args.embedding_dim)
+    # if args.backbone == "resnet18":
+    #     encoder = ResNet18Encoder(embedding_dim=args.embedding_dim)
+    # else:
+    #     encoder = ResNet18ASPPEncoder(embedding_dim=args.embedding_dim)
 
-    model = encoder.to("cuda" if torch.cuda.is_available() else "cpu")
+    # model = encoder.to("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Sampler Configs
-    n_way = args.n_way
-    k_shot = args.k_shot
-    n_samples = args.k_shot + args.query
+    # # Sampler Configs
+    # n_way = args.n_way
+    # k_shot = args.k_shot
+    # n_samples = args.k_shot + args.query
 
-    # ProtoNet loss
-    loss_fn = PrototypicalLoss(n_support=k_shot)
+    # # ProtoNet loss
+    # loss_fn = PrototypicalLoss(n_support=k_shot)
 
-    optimizer = (
-        torch.optim.Adam(model.parameters(), lr=args.lr)
-        if args.optimizer == "adam"
-        else torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
-    )
+    # optimizer = (
+    #     torch.optim.Adam(model.parameters(), lr=args.lr)
+    #     if args.optimizer == "adam"
+    #     else torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
+    # )
 
-    if verbose:
-        print("     - ✓ Model initialized")
-        print("     - ✓ Loss function initialized")
-        print("     - ✓ optimizer initialized")
+    # if verbose:
+    #     print("     - ✓ Model initialized")
+    #     print("     - ✓ Loss function initialized")
+    #     print("     - ✓ optimizer initialized")
     
-    # =========================================================
-    # TRAINING LOOP
-    # =========================================================
-    if verbose:
-        print("\n===============================")
-        print("TRAINING THE MODEL")
-        print("===============================")
+    # # =========================================================
+    # # TRAINING LOOP
+    # # =========================================================
+    # if verbose:
+    #     print("\n===============================")
+    #     print("TRAINING THE MODEL")
+    #     print("===============================")
     
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    for epoch in range(1, args.epochs + 1):
-        print(f"\n********** EPOCH {epoch}/{args.epochs} **********")
+    # for epoch in range(1, args.epochs + 1):
+    #     print(f"\n********** EPOCH {epoch}/{args.epochs} **********")
 
-        train_loss, train_acc = train_one_epoch(
-            model=model,
-            train_dataset=train_dataset,
-            task_sampler=train_sampler,
-            loss_fn=loss_fn,
-            optimizer=optimizer,
-            device=device
-        )
+    #     train_loss, train_acc = train_one_epoch(
+    #         model=model,
+    #         train_dataset=train_dataset,
+    #         task_sampler=train_sampler,
+    #         loss_fn=loss_fn,
+    #         optimizer=optimizer,
+    #         device=device
+    #     )
 
-        print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc*100:.2f}%")
+    #     print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc*100:.2f}%")
 
-        # ================================
-        # Validation (mAP@1, mAP@5)
-        # ================================
-        map1, map5 = evaluate_one_epoch(
-            model=model,
-            eval_dataset=val_dataset,
-            task_sampler=val_sampler,
-            n_support=k_shot,
-            device=device
-        )
+    #     # ================================
+    #     # Validation (mAP@1, mAP@5)
+    #     # ================================
+    #     map1, map5 = evaluate_one_epoch(
+    #         model=model,
+    #         eval_dataset=val_dataset,
+    #         task_sampler=val_sampler,
+    #         n_support=k_shot,
+    #         device=device
+    #     )
 
-        print(f"VAL mAP@1: {map1*100:.2f}% | VAL mAP@5: {map5*100:.2f}%")
+    #     print(f"VAL mAP@1: {map1*100:.2f}% | VAL mAP@5: {map5*100:.2f}%")
 
-    print("\nTraining Complete!\n")
+    # print("\nTraining Complete!\n")
 
-    # ================================
-    # Testing (mAP@1, mAP@5)
-    # ================================
-    if verbose:
-        print("\n===============================")
-        print("TESTING THE MODEL")
-        print("===============================\n")
+    # # ================================
+    # # Testing (mAP@1, mAP@5)
+    # # ================================
+    # if verbose:
+    #     print("\n===============================")
+    #     print("TESTING THE MODEL")
+    #     print("===============================\n")
 
-    map1, map5 = evaluate_one_epoch(
-        model=model,
-        eval_dataset=test_dataset,
-        task_sampler=test_sampler,
-        n_support=k_shot,
-        device=device
-    )
+    # map1, map5 = evaluate_one_epoch(
+    #     model=model,
+    #     eval_dataset=test_dataset,
+    #     task_sampler=test_sampler,
+    #     n_support=k_shot,
+    #     device=device
+    # )
 
-    print(f"TEST mAP@1: {map1*100:.2f}% | TEST mAP@5: {map5*100:.2f}%")
+    # print(f"TEST mAP@1: {map1*100:.2f}% | TEST mAP@5: {map5*100:.2f}%")
 
 
 # =========================================================

@@ -46,9 +46,7 @@ def euclidean_distance(x, y):
     return torch.pow(x - y, 2).sum(2)   # [N, M]
 
 
-# -------------------------------------------------------------
 # Compute Prototypes
-# -------------------------------------------------------------
 def compute_prototypes(embeddings, labels, n_support):
     classes = torch.unique(labels)
     prototypes = []
@@ -61,9 +59,8 @@ def compute_prototypes(embeddings, labels, n_support):
 
     return torch.stack(prototypes, dim=0), classes
 
-# -------------------------------------------------------------
-# Split Support/Query
-# -------------------------------------------------------------
+
+# Split Support/Query 
 def split_support_query(embeddings, labels, n_support):
     embeddings = embeddings.cpu()
     labels = labels.cpu()

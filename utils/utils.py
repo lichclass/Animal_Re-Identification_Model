@@ -1,9 +1,3 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-
-from tqdm import tqdm
 import os
 import urllib.request
 import zipfile
@@ -14,46 +8,33 @@ from PIL import Image
 import ast
 import matplotlib.pyplot as plt
 
-from collections import defaultdict
-import random
 
-
-# -------------------------------------------------------------
-# Function: downloads the dataset
-# -------------------------------------------------------------
 def download_dataset():
+    """ Download and extract the Sea Turtle dataset."""
     data_dir = "data"
     dataset_dir = "turtle-data"
-    
-    # GitHub download URL for raw zip
     dataset_link = "https://github.com/lichclass/Animal_Re-Identification_Model/raw/main/downloads/turtle-data.zip"
-    
     zip_path = os.path.join(data_dir, f"{dataset_dir}.zip")
-
-    # Ensure root data directory exists
+    
     if not os.path.exists(data_dir):
         print(f"Creating Data Directory: {data_dir}")
         os.makedirs(data_dir, exist_ok=True)
     else:
         print(f'Data Directory "{data_dir}" already exists. Skipping creation...')
-
-    # Skip if dataset already extracted
     dataset_path = os.path.join(data_dir, dataset_dir)
     if os.path.exists(dataset_path):
         print(f'Dataset Directory "{dataset_dir}" already exists. Skipping download...')
         return
-
-    # Download zip file safely
     print(f"Downloading Dataset: {dataset_dir} from {dataset_link}")
+
     try:
         urllib.request.urlretrieve(dataset_link, zip_path)
         print("Download complete.")
     except Exception as e:
         print("Download FAILED:", e)
         return
-
-    # Extract zip
     print("Extracting dataset...")
+
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(data_dir)
@@ -62,7 +43,6 @@ def download_dataset():
         print("Extraction FAILED:", e)
         return
     finally:
-        # Clean up: remove zip file
         if os.path.exists(zip_path):
             os.remove(zip_path)
             print("Cleaned up temporary zip file.")
@@ -346,120 +326,3 @@ def display_cropped_images(cropped_results, max_display=10):
     
     plt.tight_layout()
     plt.show()
-
-
-# -------------------------------------------------------------
-# Function: Compuate Top 1 & K Accuracy
-# -------------------------------------------------------------
-def compute_map(distances, labels, k=5):
-    """
-    distances: shape [num_queries, num_classes]
-    labels: ground truth class index per query
-
-    Args:
-        distances: torch tensor of shape [num_queries, num_classes]
-        labels: torch tensor of shape [num_queries]
-        k: for mAP@k
-
-    Returns:
-        mAP@1, mAP@k
-    """
-    ranks = distances.argsort(dim=1)   # [N, C]
-    
-    # top-1 accuracy
-    top1 = (ranks[:, 0] == labels).float().mean().item()
-    
-    # top-k accuracy (vectorized)
-    # ranks[:, :k] → [N, k]
-    # labels.unsqueeze(1) → [N, 1]
-    topk = (ranks[:, :k] == labels.unsqueeze(1)).any(dim=1).float().mean().item()
-    
-    return top1, topk
-
-
-# -------------------------------------------------------------
-# Function: display annotation information
-# -------------------------------------------------------------
-def inspect_annotations():
-
-    # Configurations
-    DATA_DIR = "data"
-    ANNOTATIONS_PATH = os.path.join(DATA_DIR, "turtle-data", "annotations.json")
-    sample_idx = 0 # the index of the sample to display
-
-    # Read the JSON file
-    with open(ANNOTATIONS_PATH, "r") as f:
-        annotations = json.load(f)
-
-    # For displaying information
-    file_size = os.path.getsize(ANNOTATIONS_PATH)
-    keys = list(annotations.keys())
-    categories = [{'id': c['id'], 'name': c['name']} for c in annotations['categories']]
-    sample_img = annotations["images"][sample_idx]
-    sample_annotations = annotations["annotations"][sample_idx]
-
-    print(f"""
-=====================================================
-SeaTurtleID2022 Dataset Annotations JSON Contents:
-=====================================================
-
-> JSON File Size: 
-    {file_size} bytes
-    {file_size / 1024} KB
-    {file_size / 1024 / 1024} MB
-
-> List of Keys: 
-    {keys}
-
-> List of Categories (count = {len(categories)}): 
-    {categories}
-
-> Sample Image Data (index: {sample_idx}): 
-    {sample_img}
-
-> Sample Annotation Data (index: {sample_idx}): 
-    {sample_annotations}
-
-=====================================================
-    """)
-
-
-# -------------------------------------------------------------
-# Function: display metadata information
-# -------------------------------------------------------------
-def inspect_metadata():
-
-    # Configurations
-    DATA_DIR = "data"
-    ANNOTATIONS_PATH = os.path.join(DATA_DIR, "turtle-data", "metadata_splits.csv")
-    samples_len = 5 # the number of samples to display
-
-    # Read the CSV file
-    data = pd.read_csv(ANNOTATIONS_PATH)
-
-    # For displaying information
-    file_size = os.path.getsize(ANNOTATIONS_PATH)
-    columns = list(data.columns)
-    num_of_data = len(data)
-
-    print(f"""
-=====================================================
-SeaTurtleID2022 Metadata Information
-=====================================================
-
-> CSV File Size:
-    {file_size} bytes
-    {file_size / 1024} KB
-    {file_size / 1024 / 1024} MB
-
-> Table Columns:
-    {columns}
-
-> Number of Data:
-    {num_of_data}
-
-> Sample Data:
-{data.head(samples_len)}
-
-=====================================================
-    """)

@@ -1,7 +1,8 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 
-from tasksampler import FewShotTaskSampler
+from utils.tasksampler import FewShotTaskSampler
 from modules.resnet_aspp import ResNet18ASPPEncoder
 from modules.resnet18 import ResNet18Encoder
 from modules.protonetloss import PrototypicalLoss, compute_prototypes
@@ -9,7 +10,7 @@ from modules.protonetloss import PrototypicalLoss, compute_prototypes
 # Import the improved trainer
 import sys
 sys.path.append('.')
-from trainer import train_one_epoch as train_fn
+from utils.trainer import train_one as train_fn
 
 class FedProtoClientApp:
     def __init__(
@@ -25,13 +26,11 @@ class FedProtoClientApp:
         optimizer="adam",
         embedding_dim=256,
         lambda_align=0.5,
-        lr=1e-4,
-        use_triplet_loss=True,  # NEW
+        lr=1e-4
     ):
         self.cid = cid
-        self.local_prototypes = None  # dict[identity_str -> tensor]
-        self.global_prototypes = None  # dict[identity_str -> tensor]
-        self.use_triplet_loss = use_triplet_loss
+        self.local_prototypes = None  
+        self.global_prototypes = None  
 
         # Few Shot Configs
         self.n_way = n_way
@@ -47,14 +46,12 @@ class FedProtoClientApp:
 
         self.model = self.__build_model__(model).to(self.device)
 
-        # Use AdamW with weight decay for better generalization
         self.optimizer = (
             torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=1e-4)
             if optimizer == "adam"
             else torch.optim.SGD(self.model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
         )
 
-        # Cosine annealing scheduler (better than StepLR)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=10, eta_min=lr/10
         )
@@ -64,56 +61,68 @@ class FedProtoClientApp:
         self.train_sampler = self.__build_sampler__()
 
     # Getters and Setters
+    def set_cid(self, cid):
+        self.cid = cid
+
+    def get_cid(self):
+        message = {
+            'client': self.cid
+        }
+        return message
+
     def set_local_prototypes(self, prototypes):
         self.local_prototypes = prototypes
         
     def get_local_prototypes(self):
-        return self.local_prototypes
+        message = {
+            'client': self.cid, 
+            'num_prototypes': len(self.local_prototypes) if self.local_prototypes is not None else 0,
+            'prototypes': self.local_prototypes
+        }
+        return message
 
-    def set_model_weights(self, weights):
+    def set_model_weights(self, message):
+        weights = message['model_weights']
         self.model.load_state_dict(weights)
 
     def get_model_weights(self):
-        return self.model.state_dict()
+        message = {
+            'client': self.cid, 
+            'model_weights': self.model.state_dict()
+        }
+        return message
 
     def set_global_prototypes(self, global_prototypes_dict):
-        """
-        Receives dict[identity_str -> tensor] directly from server.
-        No conversion needed!
-        """
         self.global_prototypes = global_prototypes_dict
 
     def get_global_prototypes(self):
-        return self.global_prototypes
+        message = {
+            'client': self.cid,
+            'num_global_prototypes': len(self.global_prototypes) if self.global_prototypes is not None else 0,
+            'global_prototypes': self.global_prototypes
+        }
+        return message
 
     # Training
     def fit(self):
-        (
-            total_loss,
-            proto_loss,
-            triplet_loss,
-            align_loss,
-            train_acc
-        ) = train_fn(
-            model=self.model,
-            train_dataset=self.train_dataset,
-            task_sampler=self.train_sampler,
-            loss_fn=self.loss_fn,
-            optimizer=self.optimizer,
-            device=self.device,
-            global_prototypes=self.global_prototypes,  # Pass dict directly
-            client_id=self.cid,
-            lambda_align=self.lambda_align,
-            tqdm_position=self.cid,
-        )
+        loss, acc = train_fn(
+                model=self.model,
+                train_dataset=self.train_dataset,
+                task_sampler=self.train_sampler,
+                loss_fn=self.loss_fn,
+                optimizer=self.optimizer,
+                device=self.device,
+                global_prototypes=self.global_prototypes,  # Pass dict directly
+                client_id=self.cid,
+                lambda_align=self.lambda_align,
+            )
         self.scheduler.step()
-        
-        # Update local prototypes after training
-        self.local_prototypes = self.__build_local_prototypes__()
-        
-        return total_loss, train_acc
+        self.__build_local_prototypes__()
+        message = {'client': self.cid,  'loss': loss, 'acc': acc}
+        return message
 
     def __build_sampler__(self):
+        base_dataset = self.train_dataset
         if isinstance(self.train_dataset, torch.utils.data.Subset):
             base_dataset = self.train_dataset.dataset
             subset_indices = self.train_dataset.indices
@@ -172,7 +181,7 @@ class FedProtoClientApp:
                 true_labels = []
                 
                 for idx in batch_indices:
-                    img, label = self.train_dataset[idx]
+                    img, label = base_dataset[idx]
                     imgs.append(img)
                     true_labels.append(label)
                     
@@ -192,9 +201,8 @@ class FedProtoClientApp:
         local_prototypes = {}
         for identity, embs in identity_embeddings.items():
             avg_proto = torch.stack(embs).mean(dim=0)
-            # L2 normalization for better Re-ID performance
-            norm_proto = torch.nn.functional.normalize(avg_proto, dim=0)
+            norm_proto = F.normalize(avg_proto, dim=0)
             local_prototypes[identity] = norm_proto
-            
-        self.model.train()
+
+        self.set_local_prototypes(local_prototypes)
         return local_prototypes

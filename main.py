@@ -9,9 +9,12 @@ import sys
 from config import get_config, save_config
 
 # Dataset utilities
-from utils import (
+from utils.utils import (
     download_dataset,
     build_sea_turtle_metadata,
+)
+
+from utils.inspects import (
     inspect_annotations,
     inspect_metadata
 )

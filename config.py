@@ -8,9 +8,7 @@ def get_config():
         description="Federated Prototypical Network with Residual Networks and ASPP for SeaTurtleID2022"
     )
 
-    # =========================================================
-    # ACTION COMMAND
-    # =========================================================
+    # Action Commands
     parser.add_argument(
         "--download-data",
         action="store_true",
@@ -29,9 +27,7 @@ def get_config():
         help="Train the model"
     )
 
-    # =========================================================
-    # DATASET & SPLIT PARAMETERS
-    # =========================================================
+    # Dataset parameters
     parser.add_argument("--data-dir", type=str, default="data/turtle-data")
     parser.add_argument("--annotations", type=str, default="data/turtle-data/annotations.json")
     parser.add_argument("--metadata", type=str, default="data/turtle-data/metadata_splits.csv")
@@ -45,10 +41,6 @@ def get_config():
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--eval-episodes", type=int, default=100)
     parser.add_argument("--test-episodes", type=int, default=100)
-
-    # =========================================================
-    # MODEL PARAMETERS
-    # =========================================================
     
     # Federated Prototypical Network parameters
     parser.add_argument("--federated", action="store_true", help="Use Federated Prototypical Network")
@@ -56,6 +48,7 @@ def get_config():
     parser.add_argument("--lambda-align", type=float, default=0.5)
     parser.add_argument("--num-clients", type=int, default=3)
 
+    # Model parameters
     parser.add_argument(
         "--backbone",
         type=str,
@@ -64,27 +57,20 @@ def get_config():
     )
     parser.add_argument("--embedding-dim", type=int, default=256)
 
-    # =========================================================
-    # TRAINING PARAMETERS
-    # =========================================================
+    # Training parameters
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--optimizer", type=str, choices=["adam", "sgd"], default="adam")
     parser.add_argument("--eval-every", type=int, default=100)
-    parser.add_argument("--device", type=str,
-                    default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--early-stopping-patience", type=int, default=10)
 
-    # =========================================================
-    # OUTPUT & LOGGING
-    # =========================================================
+    # Output and Logging
     parser.add_argument("--save-results", action="store_true")
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--experiment-name", type=str, default="exp1")
 
-    # =========================================================
-    # DATA INSPECTION
-    # =========================================================
+    # Data Inspection
     parser.add_argument("--inspect-annotations", action="store_true")
     parser.add_argument("--inspect-metadata", action="store_true")
 
@@ -95,9 +81,7 @@ def get_config():
 def save_config(args):
     results_path = os.path.join(args.results_dir, args.experiment_name)
     os.makedirs(results_path, exist_ok=True)
-
     cfg_path = os.path.join(results_path, "config.yaml")
     with open(cfg_path, "w") as f:
         yaml.dump(vars(args), f)
-
     return results_path

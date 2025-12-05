@@ -28,7 +28,11 @@ class FedProtoServerApp:
         self.global_encoder.load_state_dict(weights)
 
     def get_global_model_weights(self):
-        return self.global_encoder.state_dict()
+        message = {
+            'server': 'global',
+            'model_weights': self.global_encoder.state_dict()
+        }
+        return message
 
     # ------------------------------------------------------------------
     # AGGREGATION
