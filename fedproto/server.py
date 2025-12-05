@@ -39,16 +39,26 @@ class FedProtoServerApp:
     # ------------------------------------------------------------------
 
     def aggregate(self, client_protos):
-        proto_bucket = {}
-        for _, proto_dict in client_protos.items():
-            for identity, emb in proto_dict.items():
+        sum_weighted = {}
+        sum_counts = {}
+        for _, payload in client_protos.items():
+            local_protos = payload["prototypes"]
+            local_counts = payload["counts"]
+            if local_protos is None or local_counts is None:
+                continue
+            for identity, emb in local_protos.items():
+                n = int(local_counts.get(identity, 1))
                 emb = emb.detach().cpu()
-                if identity not in proto_bucket:
-                    proto_bucket[identity] = []
-                proto_bucket[identity].append(emb)
+                if identity not in sum_weighted:
+                    sum_weighted[identity] = emb * n
+                    sum_counts[identity] = n
+                else:
+                    sum_weighted[identity] += emb * n
+                    sum_counts[identity] += n
         global_prototypes = {}
-        for identity, embs in proto_bucket.items():
-            avg_proto = torch.mean(torch.stack(embs), dim=0)
+        for identity, weighted_sum in sum_weighted.items():
+            total_n = max(sum_counts[identity], 1)
+            avg_proto = weighted_sum / total_n
             norm_proto = F.normalize(avg_proto, dim=0)
             global_prototypes[identity] = norm_proto
         self.set_global_prototypes(global_prototypes)
@@ -58,7 +68,7 @@ class FedProtoServerApp:
         client_states = []
         client_sizes = []
         for client in clients:
-            state = client.get_model_weights()
+            state = client.get_model_weights()['model_weights']
             state_cpu = {k: v.cpu() for k, v in state.items()}
             client_states.append(state_cpu)
             client_sizes.append(len(client.train_dataset))

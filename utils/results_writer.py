@@ -33,3 +33,11 @@ def save_map_plot(results_path, map1_list, map5_list):
     plt.tight_layout()
     plt.savefig(os.path.join(results_path, "map_curve.png"))
     plt.close()
+
+def save_results(results_path, test_loss, test_acc):
+    out = {
+        "test_loss": test_loss,
+        "test_accuracy": test_acc
+    }
+    with open(os.path.join(results_path, "test_results.json"), "w") as f:
+        json.dump(out, f, indent=4)

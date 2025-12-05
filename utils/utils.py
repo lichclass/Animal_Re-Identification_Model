@@ -8,6 +8,8 @@ from PIL import Image
 import ast
 import matplotlib.pyplot as plt
 
+from torch.utils.data import Subset
+
 
 def download_dataset():
     """ Download and extract the Sea Turtle dataset."""
@@ -326,3 +328,59 @@ def display_cropped_images(cropped_results, max_display=10):
     
     plt.tight_layout()
     plt.show()
+
+
+def split_dataset_reid(dataset, query_ratio=0.3, min_samples_per_id=2, seed=42):
+    np.random.seed(seed)
+    
+    if isinstance(dataset, Subset):
+        base_dataset = dataset.dataset
+        valid_indices = dataset.indices
+    else:
+        base_dataset = dataset
+        valid_indices = list(range(len(dataset)))
+    
+    identity_to_idx = base_dataset.identity_to_idx
+    
+    identity_to_indices = {}
+    
+    for idx in valid_indices:
+        row = base_dataset.df.iloc[idx]
+        identity_str = row['identity']
+        label = identity_to_idx[identity_str]
+        
+        if label not in identity_to_indices:
+            identity_to_indices[label] = []
+        identity_to_indices[label].append(idx)
+    
+    query_indices = []
+    gallery_indices = []
+    skipped = 0
+    
+    # Split per identity
+    for _, indices in identity_to_indices.items():
+        if len(indices) < min_samples_per_id:
+            skipped += 1
+            continue
+        
+        indices_array = np.array(indices)
+        np.random.shuffle(indices_array)
+        
+        n_query = max(1, int(len(indices) * query_ratio))
+        n_query = min(n_query, len(indices) - 1)  # Ensure at least 1 gallery sample
+        
+        query_indices.extend(indices_array[:n_query].tolist())
+        gallery_indices.extend(indices_array[n_query:].tolist())
+    
+    print(f"\n=== Re-ID Split Statistics ===")
+    print(f"Total identities: {len(identity_to_indices)}")
+    print(f"Valid identities (>={min_samples_per_id} samples): {len(identity_to_indices) - skipped}")
+    print(f"Skipped identities: {skipped}")
+    print(f"Query samples: {len(query_indices)}")
+    print(f"Gallery samples: {len(gallery_indices)}")
+    print(f"Query:Gallery ratio: {len(query_indices)/(len(gallery_indices) or 1):.2f}\n")
+    
+    query_dataset = Subset(base_dataset, query_indices)
+    gallery_dataset = Subset(base_dataset, gallery_indices)
+    
+    return query_dataset, gallery_dataset 

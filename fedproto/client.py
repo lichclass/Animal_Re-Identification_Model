@@ -26,10 +26,12 @@ class FedProtoClientApp:
         optimizer="adam",
         embedding_dim=256,
         lambda_align=0.5,
+        lambda_triplet=0.3,
         lr=1e-4
     ):
         self.cid = cid
         self.local_prototypes = None  
+        self.local_proto_counts = None
         self.global_prototypes = None  
 
         # Few Shot Configs
@@ -38,11 +40,12 @@ class FedProtoClientApp:
         self.n_samples = n_samples
         self.episodes = episodes
         self.lambda_align = lambda_align
+        self.lambda_triplet = lambda_triplet
 
         # Model Configs
         self.embedding_dim = embedding_dim
         self.loss_fn = PrototypicalLoss(k_shot)
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = self.__build_model__(model).to(self.device)
 
@@ -77,7 +80,8 @@ class FedProtoClientApp:
         message = {
             'client': self.cid, 
             'num_prototypes': len(self.local_prototypes) if self.local_prototypes is not None else 0,
-            'prototypes': self.local_prototypes
+            'prototypes': self.local_prototypes,
+            'counts': self.local_proto_counts
         }
         return message
 
@@ -105,7 +109,7 @@ class FedProtoClientApp:
 
     # Training
     def fit(self):
-        loss, acc = train_fn(
+        proto_loss, triplet_loss, acc = train_fn(
                 model=self.model,
                 train_dataset=self.train_dataset,
                 task_sampler=self.train_sampler,
@@ -115,10 +119,11 @@ class FedProtoClientApp:
                 global_prototypes=self.global_prototypes,  # Pass dict directly
                 client_id=self.cid,
                 lambda_align=self.lambda_align,
+                lambda_triplet=self.lambda_triplet,
             )
         self.scheduler.step()
         self.__build_local_prototypes__()
-        message = {'client': self.cid,  'loss': loss, 'acc': acc}
+        message = {'client': self.cid,  'proto_loss': proto_loss, 'triplet_loss': triplet_loss, 'acc': acc}
         return message
 
     def __build_sampler__(self):
@@ -199,10 +204,13 @@ class FedProtoClientApp:
         
         # Average and normalize
         local_prototypes = {}
+        local_proto_counts = {}
         for identity, embs in identity_embeddings.items():
             avg_proto = torch.stack(embs).mean(dim=0)
             norm_proto = F.normalize(avg_proto, dim=0)
             local_prototypes[identity] = norm_proto
+            local_proto_counts[identity] = len(embs)
 
         self.set_local_prototypes(local_prototypes)
+        self.local_proto_counts = local_proto_counts
         return local_prototypes

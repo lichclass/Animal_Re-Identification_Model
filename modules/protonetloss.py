@@ -62,8 +62,8 @@ def compute_prototypes(embeddings, labels, n_support):
 
 # Split Support/Query 
 def split_support_query(embeddings, labels, n_support):
-    embeddings = embeddings.cpu()
-    labels = labels.cpu()
+    device = embeddings.device  
+    classes = torch.unique(labels)
 
     prototypes, classes = compute_prototypes(embeddings, labels, n_support)
 
@@ -80,7 +80,7 @@ def split_support_query(embeddings, labels, n_support):
 
     q_emb = embeddings[q_indices]
     q_lbl = labels[q_indices]
-    q_lbl = torch.tensor([class_to_idx[l.item()] for l in q_lbl])
+    q_lbl = torch.tensor([class_to_idx[l.item()] for l in q_lbl], device=device, dtype=torch.long)
 
     return prototypes, q_emb, q_lbl, class_to_idx, classes
 

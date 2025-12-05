@@ -10,6 +10,7 @@ from pathlib import Path
 # Preprocessing
 from utils.dataset import SeaTurtleDataset
 from utils.tasksampler import FewShotTaskSampler
+from utils.utils import split_dataset_reid
 
 # ProtoNet components
 from modules.resnet_aspp import ResNet18ASPPEncoder
@@ -18,17 +19,39 @@ from modules.protonetloss import PrototypicalLoss
 
 # Training / Evaluation
 from utils.evaluator import evaluate_one as eval_fn
+from utils.evaluator import evaluate_reid as eval_reid_fn
 
 # Federation
 from fedproto.server import FedProtoServerApp
 from fedproto.client import FedProtoClientApp
 from fedproto.task import build_federated_splits
 
+# Logging
+from utils.results_writer import save_results
 
 # =========================================================
 # Function: Federated Mode
 # =========================================================
 def with_federation(args: argparse.Namespace, verbose=False):
+
+    # Configs
+    num_clients = args.num_clients
+    n_way = args.n_way
+    k_shot = args.k_shot
+    n_samples = args.k_shot + args.query
+    episodes = args.episodes
+    eval_episodes = args.eval_episodes
+    test_episodes = args.test_episodes
+    lr = args.lr
+    lambda_align = args.lambda_align
+    lambda_triplet = args.lambda_triplet
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    rounds = args.rounds
+    embedding_dim = args.embedding_dim
+    backbone = args.backbone
+    optimizer = args.optimizer
+    experiment_name = args.experiment_name
+    early_stopping_patience = args.early_stopping_patience
 
     # Preprocess data
     (   
@@ -41,34 +64,17 @@ def with_federation(args: argparse.Namespace, verbose=False):
     ) = preprocess_data(args)
     print("\n✓ Dataset and samplers initialized\n")
 
-    # =========================================================
-    # 2. GLOBAL LOSS FUNCTION
-    # =========================================================
-    args.loss_fn = PrototypicalLoss(n_support=args.k_shot)
-    print("     - ✓ Global loss function ready")
+    # Re-ID split
+    val_query_dataset, val_gallery_dataset = split_dataset_reid(val_dataset)
+    test_query_dataset, test_gallery_dataset = split_dataset_reid(test_dataset)
+    print("     - ✓ Re-ID datasets ready")
 
-    # Configs
-    num_clients = args.num_clients
-    n_way = args.n_way
-    k_shot = args.k_shot
-    n_samples = args.k_shot + args.query
-    episodes = args.episodes
-    eval_episodes = args.eval_episodes
-    test_episodes = args.test_episodes
-    lr = args.lr
-    lambda_align = args.lambda_align
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    rounds = args.rounds
-    embedding_dim = args.embedding_dim
-    backbone = args.backbone
-    optimizer = args.optimizer
-    experiment_name = args.experiment_name
-    early_stopping_patience = args.early_stopping_patience
+    args.loss_fn = PrototypicalLoss(n_support=k_shot)
+    print("     - ✓ Global loss function ready")
 
     # Split Dataset based on the number of clients
     client_splits = build_federated_splits(train_dataset, num_clients)
     print("     - ✓ Client splits ready")
-
 
     # Setup Global Model
     encoder = None
@@ -102,6 +108,7 @@ def with_federation(args: argparse.Namespace, verbose=False):
             optimizer=optimizer,
             embedding_dim=embedding_dim,
             lambda_align=lambda_align,
+            lambda_triplet=lambda_triplet,
             lr=lr,
         ))
         clients[i].set_model_weights(global_model_msg)
@@ -115,11 +122,11 @@ def with_federation(args: argparse.Namespace, verbose=False):
     results_dir = Path("results") / experiment_name
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    best_val_mAP = 0.0
-    best_model = None
+    # Early Stopping Configs
     early_stopping_counter = 0
 
     # Start Communications Rounds
+    best_acc = 0.0
     for round in range(rounds):
         if early_stopping_counter > early_stopping_patience:
             print("Early stopping triggered. Ending training.")
@@ -130,13 +137,16 @@ def with_federation(args: argparse.Namespace, verbose=False):
         # Run local episodic loop for n number of episodes
         for client in clients:
             client_msg = client.fit()
-            print(f"(Client {client_msg['client']}) Train Loss: {client_msg['loss']:.4f} | Train Acc: {client_msg['acc']*100:0.2f}%")
+            print(f"     - ✓ Client {client_msg['client']} training complete | Proto Loss: {client_msg['proto_loss']:.4f} | Triplet Loss: {client_msg['triplet_loss']:.4f} | Acc: {client_msg['acc']*100:.2f}%")
             
         # Get the prototypes from the clients
         client_protos = {}
         for client in clients:
             client_msg = client.get_local_prototypes()
-            client_protos[client_msg['client']] = client_msg['prototypes']
+            client_protos[client_msg['client']] = {
+                'prototypes': client_msg['prototypes'],
+                'counts': client_msg['counts']
+            }
             print(f"     - ✓ Client {client_msg['client']} prototypes ready")
 
         # Sends the prototypes to the server and aggregate
@@ -148,13 +158,12 @@ def with_federation(args: argparse.Namespace, verbose=False):
             client.set_global_prototypes(global_prototypes)
         print('     - ✓ Global prototypes sent to clients')
 
-        # server.fedAvg(clients)
-        # print("     - ✓ Global model weights updated and sent to clients")
+        server.fedAvg(clients)
+        print("     - ✓ Global model weights updated and sent to clients")
 
-        chosen_client = np.random.choice(clients)
-        print(f"(Validation) Evaluating a chosen model (Client {chosen_client.cid})...")
+        print(f"(Validation) Evaluating the Global Client...")
         loss, acc = eval_fn(
-            model=chosen_client.model,
+            model=server.global_encoder,
             eval_dataset=val_dataset,
             task_sampler=val_sampler,
             n_support=k_shot,
@@ -162,46 +171,48 @@ def with_federation(args: argparse.Namespace, verbose=False):
         )
         print(f"     - ✓ VAL Loss: {loss:.4f} | VAL Acc: {acc*100:.2f}%")
 
-        return
-        # if mAP > best_val_mAP:
-        #     best_val_mAP = mAP
-        #     best_model = copy.deepcopy(server.global_encoder.state_dict())
-        #     # Save the best model
-        #     model_path = results_dir / f"best_global_model.pth"
-        #     torch.save(server.global_encoder.state_dict(), model_path)
-        #     print(f"     - ✓ New best model saved at round {round+1} with VAL mAP@1: {best_val_mAP*100:.2f}%")
-        #     early_stopping_counter = 0
-        # else:
-        #     early_stopping_counter += 1
-    
-        # if torch.cuda.is_available():
-        #     torch.cuda.empty_cache()
+        mAP, rank1, rank5 = eval_reid_fn(
+            model=server.global_encoder,
+            query_dataset=val_query_dataset,
+            gallery_dataset=val_gallery_dataset,
+            device=device
+        )
+        print(f"     - ✓ VAL Re-ID mAP: {mAP*100:.2f}%, Rank-1: {rank1*100:.2f}%, Rank-5: {rank5*100:.2f}%")
 
-    chosen_client = np.random.choice(clients)
-    print(f"(Test) Evaluating a chosen model (Client {chosen_client.cid})...")
+        if acc > best_acc:
+            best_acc = acc
+            # Save the best model
+            model_path = results_dir / f"best_global_model.pth"
+            torch.save(server.global_encoder.state_dict(), model_path)
+            print(f"     - ✓ New best model saved at round {round+1} with VAL Acc: {best_acc*100:.2f}%")
+            early_stopping_counter = 0
+        else:
+            early_stopping_counter += 1
+    
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    print(f"(Test) Evaluating the Global Client...")
     loss, acc = eval_fn(
-        model=chosen_client.model,
+        model=server.global_encoder,
         eval_dataset=test_dataset,
         task_sampler=test_sampler,
         n_support=k_shot,
         device=device
     )
     print(f"     - ✓ TEST Loss: {loss:.4f} | TEST Acc: {acc*100:.2f}%")
+    mAP, rank1, rank5 = eval_reid_fn(
+        model=server.global_encoder,
+        query_dataset=test_query_dataset,
+        gallery_dataset=test_gallery_dataset,
+        device=device
+    )
+    print(f"     - ✓ TEST Re-ID mAP: {mAP*100:.2f}%, Rank-1: {rank1*100:.2f}%, Rank-5: {rank5*100:.2f}%")
+
+
+    save_results(results_dir, loss, acc)
+
     return
-
-
-    # Testing the best model on test set
-    print("\nTesting the Best Global Model on Test Set...")
-    # server.global_encoder.load_state_dict(best_model)
-    mAP, rank1, rank5 = server.evaluate(test_dataset)
-
-    # Write results to file
-    results_path = results_dir / f"test_results.txt"
-    with open(results_path, "w") as f:
-        f.write("===== Experiment Results =====\n")
-        f.write(f"Test Rank-1: {rank1*100:.2f}%\n")
-        f.write(f"Test Rank-5: {rank5*100:.2f}%\n")
-        f.write(f"Test mAP@1: {mAP*100:.2f}%\n")
 
 # =========================================================
 # Function: Non-Federated Mode
