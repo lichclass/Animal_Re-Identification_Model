@@ -73,6 +73,7 @@ def get_config():
     parser.add_argument("--eval-every", type=int, default=100)
     parser.add_argument("--device", type=str,
                     default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--early-stopping-patience", type=int, default=10)
 
     # =========================================================
     # OUTPUT & LOGGING

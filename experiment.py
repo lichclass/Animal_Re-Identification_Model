@@ -1,9 +1,10 @@
 import argparse
+import copy
 import os
 import torch
 import pandas as pd
-import numpy as np
-import random
+
+from pathlib import Path
 
 # Preprocessing
 from dataset import SeaTurtleDataset
@@ -65,6 +66,8 @@ def with_federation(args: argparse.Namespace, verbose=False):
     embedding_dim = args.embedding_dim
     backbone = args.backbone
     optimizer = args.optimizer
+    experiment_name = args.experiment_name
+    early_stopping_patience = args.early_stopping_patience
 
     # Split Dataset based on the number of clients
     client_splits = build_federated_splits(train_dataset, num_clients)
@@ -78,9 +81,8 @@ def with_federation(args: argparse.Namespace, verbose=False):
         encoder = ResNet18Encoder(embedding_dim=embedding_dim)
     else:
         raise ValueError(f"Unknown backbone: {backbone}")
-    global_model = encoder.to(device) # Initialize global model for unified weights
+    global_model = encoder.to(device) 
 
-    # Create Clients based on the number of clients
     clients = []
     for i in range(num_clients):
         train_loader = torch.utils.data.DataLoader(
@@ -98,27 +100,37 @@ def with_federation(args: argparse.Namespace, verbose=False):
             model=backbone,
             optimizer=optimizer,
             embedding_dim=embedding_dim,
+            lambda_align=lambda_align,
             lr=lr,
         ))
         clients[i].set_model_weights(global_model.state_dict())
 
     print("     - ✓ Clients ready")
 
-    # Setup Server
-    server = FedProtoServerApp(backbone=encoder, lr=lr)
+    server = FedProtoServerApp(backbone=encoder, device=device)
     print("     - ✓ Server ready")
+
+    # Results directory
+    results_dir = Path("results") / experiment_name
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    best_val_mAP = 0.0
+    best_model = None
+    early_stopping_counter = 0
 
     # Start Communications Rounds
     for round in range(rounds):
+        if early_stopping_counter > early_stopping_patience:
+            print("Early stopping triggered. Ending training.")
+            break
+
         print(f"\n********** ROUND {round + 1}/{rounds} **********")
 
         # Run local episodic loop for n number of episodes
-        with ThreadPoolExecutor(max_workers=num_clients) as executor:
-            results = list(executor.map(lambda c: c.fit(), clients))
-
-        for cid, (loss, acc) in enumerate(results):
-            print(f"(Client {cid}) Train Loss: {loss:.4f} | Train Acc: {acc*100:0.2f}%")
-
+        for client in clients:
+            loss, acc = client.fit()
+            print(f"(Client {client.cid}) Train Loss: {loss:.4f} | Train Acc: {acc*100:0.2f}%")
+            
         # Get the prototypes from the clients
         client_protos = {}
         for client in clients:
@@ -134,17 +146,38 @@ def with_federation(args: argparse.Namespace, verbose=False):
             client.set_global_prototypes(global_prototypes)
         print('     - ✓ Global prototypes sent to clients')
 
-        chosen_client = random.choice(clients)
-        print(f"Evaluating Client {chosen_client.cid} Model...")
-        model_weights = chosen_client.get_model_weights()
-        server.set_global_model_weights(model_weights)
-        server.evaluate(val_dataset)
+        server.fedAvg(clients)
+        print("     - ✓ Global model weights updated and sent to clients")
 
-        # Update weights
-        for client in clients:
-            client.set_model_weights(server.get_global_model_weights())
-            print(f"     - ✓ Client {client.cid} weights updated")
+        print(f"Evaluating the Global Model...")
+        mAP, _, _ = server.evaluate(val_dataset)
+        
+        if mAP > best_val_mAP:
+            best_val_mAP = mAP
+            best_model = copy.deepcopy(server.global_encoder.state_dict())
+            # Save the best model
+            model_path = results_dir / f"best_global_model.pth"
+            torch.save(server.global_encoder.state_dict(), model_path)
+            print(f"     - ✓ New best model saved at round {round+1} with VAL mAP@1: {best_val_mAP*100:.2f}%")
+            early_stopping_counter = 0
+        else:
+            early_stopping_counter += 1
+    
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
+    # Testing the best model on test set
+    print("\nTesting the Best Global Model on Test Set...")
+    server.global_encoder.load_state_dict(best_model)
+    mAP, rank1, rank5 = server.evaluate(test_dataset)
+
+    # Write results to file
+    results_path = results_dir / f"test_results.txt"
+    with open(results_path, "w") as f:
+        f.write("===== Experiment Results =====\n")
+        f.write(f"Test Rank-1: {rank1*100:.2f}%\n")
+        f.write(f"Test Rank-5: {rank5*100:.2f}%\n")
+        f.write(f"Test mAP@1: {mAP*100:.2f}%\n")
 
 # =========================================================
 # Function: Non-Federated Mode

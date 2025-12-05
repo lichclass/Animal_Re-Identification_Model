@@ -5,8 +5,11 @@ from tasksampler import FewShotTaskSampler
 from modules.resnet_aspp import ResNet18ASPPEncoder
 from modules.resnet18 import ResNet18Encoder
 from modules.protonetloss import PrototypicalLoss, compute_prototypes
+
+# Import the improved trainer
+import sys
+sys.path.append('.')
 from trainer import train_one_epoch as train_fn
-from evaluator import evaluate_one_epoch as eval_fn
 
 class FedProtoClientApp:
     def __init__(
@@ -21,18 +24,21 @@ class FedProtoClientApp:
         model="resnet18_aspp",
         optimizer="adam",
         embedding_dim=256,
+        lambda_align=0.5,
         lr=1e-4,
+        use_triplet_loss=True,  # NEW
     ):
         self.cid = cid
-        self.local_prototypes = None
-        self.global_prototypes = None
-        self.global_prototype_classes = None
+        self.local_prototypes = None  # dict[identity_str -> tensor]
+        self.global_prototypes = None  # dict[identity_str -> tensor]
+        self.use_triplet_loss = use_triplet_loss
 
         # Few Shot Configs
         self.n_way = n_way
         self.k_shot = k_shot
         self.n_samples = n_samples
         self.episodes = episodes
+        self.lambda_align = lambda_align
 
         # Model Configs
         self.embedding_dim = embedding_dim
@@ -41,21 +47,26 @@ class FedProtoClientApp:
 
         self.model = self.__build_model__(model).to(self.device)
 
+        # Use AdamW with weight decay for better generalization
         self.optimizer = (
-            torch.optim.Adam(self.model.parameters(), lr=lr)
+            torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=1e-4)
             if optimizer == "adam"
-            else torch.optim.SGD(self.model.parameters(), lr=lr)
+            else torch.optim.SGD(self.model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+        )
+
+        # Cosine annealing scheduler (better than StepLR)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=10, eta_min=lr/10
         )
 
         self.train_dataset = train_dataset
         self.train_loader = train_loader
         self.train_sampler = self.__build_sampler__()
 
-    # ---------------------------
     # Getters and Setters
-
     def set_local_prototypes(self, prototypes):
         self.local_prototypes = prototypes
+        
     def get_local_prototypes(self):
         return self.local_prototypes
 
@@ -67,71 +78,41 @@ class FedProtoClientApp:
 
     def set_global_prototypes(self, global_prototypes_dict):
         """
-        global_prototypes_dict: {identity_str: embedding[D]} from server.
-
-        We convert this into:
-            - self.global_prototypes        : [C, D]
-            - self.global_prototype_classes : [C] (int labels in this client's label space)
-        Only classes that this client actually knows (present in its dataset)
-        are kept for alignment.
+        Receives dict[identity_str -> tensor] directly from server.
+        No conversion needed!
         """
-        self.global_prototypes_dict = global_prototypes_dict
-
-        # 1) Get base dataset (unwrap Subset if needed)
-        if isinstance(self.train_dataset, torch.utils.data.Subset):
-            base_dataset = self.train_dataset.dataset  # SeaTurtleDataset
-        else:
-            base_dataset = self.train_dataset
-
-        id2idx = base_dataset.identity_to_idx  # {'t001': 0, ...}
-
-        proto_list = []
-        class_list = []
-
-        # We fix an order over identities (sorted for determinism)
-        for identity in sorted(global_prototypes_dict.keys()):
-            if identity in id2idx:
-                class_idx = id2idx[identity]  # int label in this dataset
-                class_list.append(class_idx)
-                proto_list.append(global_prototypes_dict[identity].to(self.device))
-
-        if len(proto_list) == 0:
-            # No overlap between this client and global identities (rare but possible)
-            self.global_prototypes = None
-            self.global_prototype_classes = None
-        else:
-            self.global_prototypes = torch.stack(proto_list, dim=0).to(self.device)         # [C, D]
-            self.global_prototype_classes = torch.tensor(class_list, dtype=torch.long, device=self.device)
+        self.global_prototypes = global_prototypes_dict
 
     def get_global_prototypes(self):
-        # return the tensor version by default (what training uses)
-        return self.global_prototypes, self.global_prototype_classes
+        return self.global_prototypes
 
-    def get_sampled_embeddings(self, n_min=3, n_max=10, n_default=5):
-        return self.__build_sample_embeddings__(n_min, n_max, n_default)
-
-    # ---------------------------
-    # Available Methods
-
+    # Training
     def fit(self):
-        g_protos, g_classes = self.global_prototypes, self.global_prototype_classes
-
-        train_loss, train_acc = train_fn(
+        (
+            total_loss,
+            proto_loss,
+            triplet_loss,
+            align_loss,
+            train_acc
+        ) = train_fn(
             model=self.model,
             train_dataset=self.train_dataset,
             task_sampler=self.train_sampler,
             loss_fn=self.loss_fn,
             optimizer=self.optimizer,
             device=self.device,
-            global_prototypes=g_protos,
-            global_prototype_classes=g_classes,
+            global_prototypes=self.global_prototypes,  # Pass dict directly
             client_id=self.cid,
+            lambda_align=self.lambda_align,
             tqdm_position=self.cid,
         )
-
-        # Build local prototypes for sending to server
+        self.scheduler.step()
+        
+        # Update local prototypes after training
         self.local_prototypes = self.__build_local_prototypes__()
-        return train_loss, train_acc
+        
+        return total_loss, train_acc
+
     def __build_sampler__(self):
         if isinstance(self.train_dataset, torch.utils.data.Subset):
             base_dataset = self.train_dataset.dataset
@@ -139,14 +120,18 @@ class FedProtoClientApp:
         else:
             base_dataset = self.train_dataset
             subset_indices = None
+            
         all_labels = base_dataset.df["identity"].map(base_dataset.identity_to_idx).values
+        
         if subset_indices is not None:
             train_labels = all_labels[subset_indices]
         else:
             train_labels = all_labels
+            
         unique = sorted(set(train_labels))
         local_map = {c: i for i, c in enumerate(unique)}
         mapped_labels = np.array([local_map[l] for l in train_labels])
+        
         train_sampler = FewShotTaskSampler(
             labels=mapped_labels,
             n_way=self.n_way,
@@ -165,59 +150,51 @@ class FedProtoClientApp:
             raise ValueError(f"Unknown model: {model}")
 
     def __build_local_prototypes__(self):
-        batch_indices = next(iter(self.train_sampler))
-        imgs = []
-        true_labels = []
-        for idx in batch_indices:
-            img, label = self.train_dataset[idx]  # label = TRUE global label
-            imgs.append(img)
-            true_labels.append(label)
-        imgs = torch.stack(imgs).to(self.device)
-        true_labels = torch.tensor(true_labels, dtype=torch.long, device=self.device)
-        embeddings = self.model(imgs).cpu()
-        prototypes, classes = compute_prototypes(
-            embeddings,
-            true_labels,
-            self.k_shot
-        )
-        local_prototypes = {
-            self.train_dataset.dataset.idx_to_identity[int(c)]: prototypes[i]
-            for i, c in enumerate(classes)
-        }
-        return local_prototypes
-
-    def __build_sample_embeddings__(self, n_min, n_max, n_default):
-        base_k = max(n_min, min(n_default, n_max))
-        base_dataset = self.train_dataset.dataset
+        """
+        Build prototypes using MULTIPLE episodes for stability.
+        Returns dict[identity_str -> normalized_tensor]
+        """
+        base_dataset = (self.train_dataset.dataset 
+                       if isinstance(self.train_dataset, torch.utils.data.Subset)
+                       else self.train_dataset)
         idx_to_identity = base_dataset.idx_to_identity
+        
         self.model.eval()
-        label_to_embeds = {}
+        
+        # Accumulate embeddings per identity across multiple episodes
+        identity_embeddings = {}
+        
         with torch.no_grad():
-            for imgs, labels in self.train_loader:
-                imgs = imgs.to(self.device)
-                labels = labels.to(self.device)
-                emb = self.model(imgs)
-                emb = emb.detach().cpu()
-                for e, lbl in zip(emb, labels):
-                    lbl_int = int(lbl.item())
-                    if lbl_int not in label_to_embeds:
-                        label_to_embeds[lbl_int] = []
-                    label_to_embeds[lbl_int].append(e)
-        sampled_embeds = {}
-        sampled_labels = {}
-        for lbl_int, embs in label_to_embeds.items():
-            num = len(embs)
-            if num == 0:
-                continue
-            K = min(base_k, num)
-            perm = torch.randperm(num)[:K].tolist()
-            chosen = [embs[i] for i in perm]
-            emb_tensor = torch.stack(chosen, dim=0)
-            label_tensor = torch.full((K,), lbl_int, dtype=torch.long, device=self.device)
-            identity_str = idx_to_identity[lbl_int]
-            sampled_embeds[identity_str] = emb_tensor
-            sampled_labels[identity_str] = label_tensor
-
-        return sampled_embeds, sampled_labels
-
-
+            # Sample 3-5 episodes to get stable prototypes
+            for _ in range(min(5, len(self.train_sampler))):
+                batch_indices = next(iter(self.train_sampler))
+                imgs = []
+                true_labels = []
+                
+                for idx in batch_indices:
+                    img, label = self.train_dataset[idx]
+                    imgs.append(img)
+                    true_labels.append(label)
+                    
+                imgs = torch.stack(imgs).to(self.device)
+                true_labels = torch.tensor(true_labels, dtype=torch.long, device=self.device)
+                
+                embeddings = self.model(imgs)
+                
+                # Group by identity
+                for emb, label in zip(embeddings, true_labels):
+                    identity = idx_to_identity[int(label)]
+                    if identity not in identity_embeddings:
+                        identity_embeddings[identity] = []
+                    identity_embeddings[identity].append(emb.cpu())
+        
+        # Average and normalize
+        local_prototypes = {}
+        for identity, embs in identity_embeddings.items():
+            avg_proto = torch.stack(embs).mean(dim=0)
+            # L2 normalization for better Re-ID performance
+            norm_proto = torch.nn.functional.normalize(avg_proto, dim=0)
+            local_prototypes[identity] = norm_proto
+            
+        self.model.train()
+        return local_prototypes

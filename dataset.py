@@ -8,31 +8,56 @@ import pandas as pd
 
 class SeaTurtleDataset(Dataset):
     """
-    Dataset for SeaTurtleID2022 metadata_splits_* CSVs.
-
-    Each row contains:
-        file_name
-        identity
-        bounding_box (string "[x, y, w, h]" or None)
-        category
-        ... other metadata
-
-    This version CROPS using the bounding box.
+    Enhanced SeaTurtleDataset with better augmentation for Re-ID.
     """
 
-    def __init__(self, dataframe, root_dir, transform=None, verbose=False):
+    def __init__(self, dataframe, root_dir, transform=None, train=True, verbose=False):
         self.df = dataframe.reset_index(drop=True)
         self.root_dir = root_dir
+        self.train = train
         self.verbose = verbose
 
-        # Default transforms for ProtoNet / ResNet
+        # IMPROVED TRANSFORMS for Re-ID
         if transform is None:
-            self.transform = T.Compose([
-                T.Resize((224, 224)),
-                T.ToTensor(),
-                T.Normalize(mean=[0.485, 0.456, 0.406],
-                            std=[0.229, 0.224, 0.225])
-            ])
+            if train:
+                # Training: aggressive augmentation
+                self.transform = T.Compose([
+                    T.Resize((256, 256)),  # Larger initial size
+                    T.RandomResizedCrop(224, scale=(0.7, 1.0)),  # Random crop
+                    T.RandomHorizontalFlip(p=0.5),
+                    
+                    # Color augmentation (critical for turtle shells)
+                    T.ColorJitter(
+                        brightness=0.3,  # Increased from 0.2
+                        contrast=0.3,
+                        saturation=0.3,
+                        hue=0.15
+                    ),
+                    
+                    # Random perspective (handles viewpoint changes)
+                    T.RandomPerspective(distortion_scale=0.2, p=0.3),
+                    
+                    # Random rotation (turtles can be at any angle)
+                    T.RandomRotation(degrees=15),
+                    
+                    # Random erasing (occlusion simulation)
+                    T.ToTensor(),
+                    T.Normalize(
+                        mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]
+                    ),
+                    T.RandomErasing(p=0.3, scale=(0.02, 0.15)),
+                ])
+            else:
+                # Validation/Test: minimal augmentation
+                self.transform = T.Compose([
+                    T.Resize((224, 224)),
+                    T.ToTensor(),
+                    T.Normalize(
+                        mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]
+                    )
+                ])
         else:
             self.transform = transform
 
@@ -47,8 +72,8 @@ class SeaTurtleDataset(Dataset):
             print(f"Root Dir      : {self.root_dir}")
             print(f"Total Samples : {len(self.df)}")
             print(f"Unique IDs    : {len(self.identity_to_idx)}")
-            print(f"ID Mapping    : {self.identity_to_idx}")
-            print("Cropping Mode : BOUNDING BOX\n")
+            print(f"Mode          : {'TRAIN' if train else 'EVAL'}")
+            print(f"Cropping Mode : BOUNDING BOX\n")
 
     def __len__(self):
         return len(self.df)
@@ -81,10 +106,12 @@ class SeaTurtleDataset(Dataset):
             bbox = ast.literal_eval(bbox_str)
             x, y, w, h = bbox
 
-            x = max(0, int(x))
-            y = max(0, int(y))
-            w = min(int(w), img_width - x)
-            h = min(int(h), img_height - y)
+            # Add padding to bounding box (important for Re-ID!)
+            padding = 0.1  # 10% padding
+            x = max(0, int(x - w * padding))
+            y = max(0, int(y - h * padding))
+            w = min(int(w * (1 + 2*padding)), img_width - x)
+            h = min(int(h * (1 + 2*padding)), img_height - y)
 
             cropped = img.crop((x, y, x + w, y + h))
             return cropped
@@ -107,3 +134,13 @@ class SeaTurtleDataset(Dataset):
         label = self.identity_to_idx[identity]
 
         return img, label
+
+
+# ========================================
+# USAGE IN experiment.py
+# ========================================
+# Update preprocess_data() function:
+#
+# train_dataset = SeaTurtleDataset(train_df, args.data_dir, train=True, verbose=False)
+# val_dataset   = SeaTurtleDataset(val_df, args.data_dir, train=False, verbose=False)
+# test_dataset  = SeaTurtleDataset(test_df, args.data_dir, train=False, verbose=False)

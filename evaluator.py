@@ -58,7 +58,7 @@ def evaluate_one_epoch(model, eval_dataset, task_sampler, n_support, device="cud
         loss_scores.append(loss.item())
 
         preds = torch.argmin(distances, dim=1)
-        acc = (pred == query_labels).float().mean()
+        acc = (preds == query_labels).float().mean()
         acc_scores.append(acc.item())
 
         # Compute mAP metrics

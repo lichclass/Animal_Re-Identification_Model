@@ -1,11 +1,6 @@
 import torch
 import torch.nn.functional as F
-import numpy as np
-from tqdm import tqdm
-
-from modules.protonetloss import euclidean_distance
-from modules.resnet_aspp import ResNet18ASPPEncoder
-from modules.resnet18 import ResNet18Encoder
+import copy
 
 
 class FedProtoServerApp:
@@ -16,14 +11,10 @@ class FedProtoServerApp:
         - Learnable pseudo-inputs (one per identity)
     """
 
-    def __init__(self, backbone, device="cpu", lr=1e-4):
+    def __init__(self, backbone, device="cpu"):
         self.best_client = None 
-        self.global_prototypes = None      # dict: identity → embedding[D]
+        self.global_prototypes = None      
         self.device = device
-
-        # -------------------------------
-        # Global encoder initialization
-        # -------------------------------
         self.global_encoder = backbone
 
     # ------------------------------------------------------------------
@@ -31,7 +22,6 @@ class FedProtoServerApp:
     # ------------------------------------------------------------------
 
     def set_global_prototypes(self, global_prototypes):
-        """Stores dict + prepares matrix + initializes pseudo-inputs."""
         self.global_prototypes = global_prototypes
 
     def set_global_model_weights(self, weights):
@@ -45,49 +35,45 @@ class FedProtoServerApp:
     # ------------------------------------------------------------------
 
     def aggregate(self, client_protos):
-        """ Average client prototypes → produce global prototypes """
-
         proto_bucket = {}
-
-        # Collect embeddings per identity
-        for cid, proto_dict in client_protos.items():
+        for _, proto_dict in client_protos.items():
             for identity, emb in proto_dict.items():
                 emb = emb.detach().cpu()
-
                 if identity not in proto_bucket:
                     proto_bucket[identity] = []
-
                 proto_bucket[identity].append(emb)
-
-        # Average + normalize
         global_prototypes = {}
-
         for identity, embs in proto_bucket.items():
             avg_proto = torch.mean(torch.stack(embs), dim=0)
             norm_proto = F.normalize(avg_proto, dim=0)
             global_prototypes[identity] = norm_proto
-
-        # Store + prepare matrix + pseudo inputs
         self.set_global_prototypes(global_prototypes)
         return global_prototypes
-
-
-    # ------------------------------------------------------------------
-    # DISTANCE-BASED EVALUATION
-    # ------------------------------------------------------------------
+    
+    def fedAvg(self, clients):
+        client_states = []
+        client_sizes = []
+        for client in clients:
+            state = client.get_model_weights()
+            state_cpu = {k: v.cpu() for k, v in state.items()}
+            client_states.append(state_cpu)
+            client_sizes.append(len(client.train_dataset))
+        total_samples = sum(client_sizes)
+        client_weights = [n / total_samples for n in client_sizes]
+        global_state = copy.deepcopy(client_states[0])
+        for key in global_state.keys():
+            avg_param = 0
+            for w, state in zip(client_weights, client_states):
+                avg_param += w * state[key]
+            global_state[key] = avg_param
+        self.set_global_model_weights(global_state)
+        self.global_encoder.to(self.device)
+        for client in clients:
+            client.set_model_weights(self.get_global_model_weights())
+        return global_state
 
     @torch.no_grad()
     def evaluate(self, dataset, batch_size=64):
-        """
-        TRUE Re-ID evaluation:
-            - No prototypes used
-            - Only the encoder's embeddings
-            - Query vs Gallery ranking
-
-        Returns:
-            mAP, rank1, rank5
-        """
-
         device = self.device
         model = self.global_encoder.to(device)
         model.eval()

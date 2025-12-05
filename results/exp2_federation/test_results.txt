@@ -1,0 +1,4 @@
+===== Experiment Results =====
+Test Rank-1: 21.35%
+Test Rank-5: 37.83%
+Test mAP@1: 8.87%
