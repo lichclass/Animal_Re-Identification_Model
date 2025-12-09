@@ -1,5 +1,4 @@
 import argparse
-import copy
 import os
 import torch
 import pandas as pd
@@ -27,7 +26,7 @@ from fedproto.client import FedProtoClientApp
 from fedproto.task import build_federated_splits
 
 # Logging
-from utils.results_writer import save_results
+from utils.results_writer import save_results, save_training_history
 
 # =========================================================
 # Function: Federated Mode
@@ -122,11 +121,23 @@ def with_federation(args: argparse.Namespace, verbose=False):
     results_dir = Path("results") / experiment_name
     results_dir.mkdir(parents=True, exist_ok=True)
 
+    history = {
+        'train_proto_loss': [],
+        'train_triplet_loss': [],
+        'train_acc': [],
+        'val_loss': [],
+        'val_acc': [],
+        'val_mAP': [],
+        'val_rank1': [],
+        'val_rank5': []
+    }
+
+
     # Early Stopping Configs
     early_stopping_counter = 0
-
-    # Start Communications Rounds
     best_acc = 0.0
+    best_mAP = 0.0
+
     for round in range(rounds):
         if early_stopping_counter > early_stopping_patience:
             print("Early stopping triggered. Ending training.")
@@ -134,11 +145,26 @@ def with_federation(args: argparse.Namespace, verbose=False):
 
         print(f"\n********** ROUND {round + 1}/{rounds} **********")
 
+        round_proto_losses = []
+        round_triplet_losses = []
+        round_accs = []
+
         # Run local episodic loop for n number of episodes
         for client in clients:
             client_msg = client.fit()
+            round_proto_losses.append(client_msg['proto_loss'])
+            round_triplet_losses.append(client_msg['triplet_loss'])
+            round_accs.append(client_msg['acc'])
             print(f"     - ✓ Client {client_msg['client']} training complete | Proto Loss: {client_msg['proto_loss']:.4f} | Triplet Loss: {client_msg['triplet_loss']:.4f} | Acc: {client_msg['acc']*100:.2f}%")
-            
+        
+        avg_proto_loss = np.mean(round_proto_losses)
+        avg_triplet_loss = np.mean(round_triplet_losses)
+        avg_acc = np.mean(round_accs)
+
+        history['train_proto_loss'].append(avg_proto_loss)
+        history['train_triplet_loss'].append(avg_triplet_loss)
+        history['train_acc'].append(avg_acc)
+
         # Get the prototypes from the clients
         client_protos = {}
         for client in clients:
@@ -171,6 +197,9 @@ def with_federation(args: argparse.Namespace, verbose=False):
         )
         print(f"     - ✓ VAL Loss: {loss:.4f} | VAL Acc: {acc*100:.2f}%")
 
+        history['val_loss'].append(loss)
+        history['val_acc'].append(acc)
+
         mAP, rank1, rank5 = eval_reid_fn(
             model=server.global_encoder,
             query_dataset=val_query_dataset,
@@ -179,18 +208,24 @@ def with_federation(args: argparse.Namespace, verbose=False):
         )
         print(f"     - ✓ VAL Re-ID mAP: {mAP*100:.2f}%, Rank-1: {rank1*100:.2f}%, Rank-5: {rank5*100:.2f}%")
 
-        if acc > best_acc:
+        history['val_mAP'].append(mAP)
+        history['val_rank1'].append(rank1)
+        history['val_rank5'].append(rank5)
+
+        if mAP > best_mAP:
+            best_mAP = mAP
             best_acc = acc
-            # Save the best model
             model_path = results_dir / f"best_global_model.pth"
             torch.save(server.global_encoder.state_dict(), model_path)
-            print(f"     - ✓ New best model saved at round {round+1} with VAL Acc: {best_acc*100:.2f}%")
+            print(f"     - ✓ New best model saved at round {round+1} with VAL mAP: {best_mAP*100:.2f}%")
             early_stopping_counter = 0
         else:
             early_stopping_counter += 1
     
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    save_training_history(history, results_dir)
 
     print(f"(Test) Evaluating the Global Client...")
     loss, acc = eval_fn(

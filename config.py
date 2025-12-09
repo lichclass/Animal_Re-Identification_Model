@@ -45,8 +45,8 @@ def get_config():
     # Federated Prototypical Network parameters
     parser.add_argument("--federated", action="store_true", help="Use Federated Prototypical Network")
     parser.add_argument("--rounds", type=int, default=10)
-    parser.add_argument("--lambda-align", type=float, default=0.5)
-    parser.add_argument("--lambda-triplet", type=float, default=0.3)
+    parser.add_argument("--lambda-align", type=float, default=0.5, help="Weight for prototype alignment loss")
+    parser.add_argument("--lambda-triplet", type=float, default=0.3, help="Weight for triplet loss")
     parser.add_argument("--num-clients", type=int, default=3)
 
     # Model parameters

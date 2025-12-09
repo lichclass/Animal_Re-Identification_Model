@@ -94,7 +94,7 @@ def evaluate_reid(model, query_dataset, gallery_dataset, batch_size=64, device=N
     indices = torch.argsort(dist_matrix, dim=1)       # [Nq, Ng]
 
     mAP = compute_map_from_indices(indices, q_labels, g_labels)
-    cmc = compute_cmc_from_indices(indices, q_labels, g_labels, topk=topk)
+    cmc = compute_cmc_from_indices(indices, q_labels, g_labels, topk)
 
     rank1 = cmc[0].item()
     rank5 = cmc[min(4, len(cmc)-1)].item()
@@ -102,9 +102,7 @@ def evaluate_reid(model, query_dataset, gallery_dataset, batch_size=64, device=N
     return float(mAP), rank1, rank5
     
 
-def compute_map_from_indices(indices: torch.Tensor,
-                             q_labels: torch.Tensor,
-                             g_labels: torch.Tensor) -> torch.Tensor:
+def compute_map_from_indices(indices, q_labels, g_labels):
     """
     Compute mean Average Precision (mAP) for ReID using precomputed ranking indices.
 
@@ -159,10 +157,7 @@ def compute_map_from_indices(indices: torch.Tensor,
     return mAP
 
 
-def compute_cmc_from_indices(indices: torch.Tensor,
-                             q_labels: torch.Tensor,
-                             g_labels: torch.Tensor,
-                             max_rank: int = 5) -> torch.Tensor:
+def compute_cmc_from_indices(indices, q_labels, g_labels, max_rank=5):
     """
     Compute Cumulative Matching Characteristic (CMC) curve up to `max_rank`
     using precomputed ranking indices.
