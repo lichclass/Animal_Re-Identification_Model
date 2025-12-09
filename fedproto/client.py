@@ -3,13 +3,10 @@ import torch.nn.functional as F
 import numpy as np
 
 from utils.tasksampler import FewShotTaskSampler
-from modules.resnet_aspp import ResNet18ASPPEncoder
+from modules.resnet_aspp import ResNet50ASPPEncoder
 from modules.resnet18 import ResNet18Encoder
-from modules.protonetloss import PrototypicalLoss, compute_prototypes
-
-# Import the improved trainer
-import sys
-sys.path.append('.')
+from modules.protonetloss import PrototypicalLoss
+# Import the improved trainer function
 from utils.trainer import train_one as train_fn
 
 class FedProtoClientApp:
@@ -156,8 +153,8 @@ class FedProtoClientApp:
         return train_sampler
 
     def __build_model__(self, model):
-        if model == "resnet18_aspp":
-            return ResNet18ASPPEncoder(embedding_dim=self.embedding_dim)
+        if model == "resnet50_aspp":
+            return ResNet50ASPPEncoder(embedding_dim=self.embedding_dim)
         elif model == "resnet18":
             return ResNet18Encoder(embedding_dim=self.embedding_dim)
         else:

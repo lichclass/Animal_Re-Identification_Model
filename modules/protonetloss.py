@@ -63,24 +63,38 @@ def compute_prototypes(embeddings, labels, n_support):
 # Split Support/Query 
 def split_support_query(embeddings, labels, n_support):
     device = embeddings.device  
-    classes = torch.unique(labels)
 
+    # Work with labels on CPU for safer indexing
+    labels_cpu = labels.detach().to("cpu")
+
+    # Prototypes still computed as before
     prototypes, classes = compute_prototypes(embeddings, labels, n_support)
 
     # Map labels to episodic class indices
     class_to_idx = {c.item(): i for i, c in enumerate(classes)}
 
-    # Query set
+    # Build query indices per class
     q_indices = []
     for c in classes:
-        idxs = (labels == c).nonzero(as_tuple=False).squeeze(1)
-        q_indices.append(idxs[n_support:])
+        idxs = (labels_cpu == c.item()).nonzero(as_tuple=False).view(-1)
+        if idxs.numel() > n_support:
+            q_indices.append(idxs[n_support:])
 
-    q_indices = torch.cat(q_indices, dim=0)
+    if len(q_indices) == 0:
+        raise ValueError("No query samples in episode; check n_support / sampler.")
 
-    q_emb = embeddings[q_indices]
-    q_lbl = labels[q_indices]
-    q_lbl = torch.tensor([class_to_idx[l.item()] for l in q_lbl], device=device, dtype=torch.long)
+    q_indices = torch.cat(q_indices, dim=0).to(device)
+
+    # Index on device tensors
+    q_emb = embeddings.index_select(0, q_indices)
+    q_lbl_orig = labels.index_select(0, q_indices)
+
+    # Remap labels to episodic class indices on CPU, then move back
+    q_lbl = torch.tensor(
+        [class_to_idx[int(l.item())] for l in q_lbl_orig.detach().to("cpu")],
+        device=device,
+        dtype=torch.long,
+    )
 
     return prototypes, q_emb, q_lbl, class_to_idx, classes
 

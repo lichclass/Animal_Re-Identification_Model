@@ -6,16 +6,16 @@ import torch.nn.functional as F
 from torchvision import models
 from torchvision.models.segmentation.deeplabv3 import ASPP
 
-class ResNet18ASPPEncoder(nn.Module):
+class ResNet50ASPPEncoder(nn.Module):
     """
-    ResNet18 backbone + ASPP from DeepLabv3 (Chen et al. 2017).
+    ResNet50 backbone + ASPP from DeepLabv3 (Chen et al. 2017).
 
     Flow:
-        Pretrained ResNet18 (up to last conv) -> ASPP -> Global Avg Pool -> Linear -> embedding
+        Pretrained ResNet50  (up to last conv) -> ASPP -> Global Avg Pool -> Linear -> embedding
 
     Args:
         embedding_dim: dimension of the final embedding
-        use_pretrained: whether to use ImageNet-pretrained ResNet18
+        use_pretrained: whether to use ImageNet-pretrained ResNet50
     """
     def __init__(self, embedding_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
@@ -47,5 +47,5 @@ class ResNet18ASPPEncoder(nn.Module):
         return x
 
     def display_info(self):
-        print("ResNet18 backbone -> ASPP -> AdaptiveAvgPool -> Linear -> L2-normalized embedding")
+        print("ResNet50 backbone -> ASPP -> AdaptiveAvgPool -> Linear -> L2-normalized embedding")
 

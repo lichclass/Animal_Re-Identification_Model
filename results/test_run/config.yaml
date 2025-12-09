@@ -2,7 +2,7 @@ annotations: data/turtle-data/annotations.json
 backbone: resnet18_aspp
 build_splits: false
 data_dir: data/turtle-data
-device: cpu
+device: cuda
 download_data: false
 early_stopping_patience: 10
 embedding_dim: 256

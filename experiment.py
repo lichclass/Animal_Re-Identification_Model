@@ -12,7 +12,7 @@ from utils.tasksampler import FewShotTaskSampler
 from utils.utils import split_dataset_reid
 
 # ProtoNet components
-from modules.resnet_aspp import ResNet18ASPPEncoder
+from modules.resnet_aspp import ResNet50ASPPEncoder
 from modules.resnet18 import ResNet18Encoder
 from modules.protonetloss import PrototypicalLoss
 
@@ -77,8 +77,8 @@ def with_federation(args: argparse.Namespace, verbose=False):
 
     # Setup Global Model
     encoder = None
-    if backbone == "resnet18_aspp":
-        encoder = ResNet18ASPPEncoder(embedding_dim=embedding_dim)
+    if backbone == "resnet50_aspp":
+        encoder = ResNet50ASPPEncoder(embedding_dim=embedding_dim)
     elif backbone == "resnet18":
         encoder = ResNet18Encoder(embedding_dim=embedding_dim)
     else:
@@ -225,7 +225,7 @@ def with_federation(args: argparse.Namespace, verbose=False):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    save_training_history(history, results_dir)
+    save_training_history(results_dir, history)
 
     print(f"(Test) Evaluating the Global Client...")
     loss, acc = eval_fn(
@@ -280,7 +280,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
     # if args.backbone == "resnet18":
     #     encoder = ResNet18Encoder(embedding_dim=args.embedding_dim)
     # else:
-    #     encoder = ResNet18ASPPEncoder(embedding_dim=args.embedding_dim)
+    #     encoder = ResNet50ASPPEncoder(embedding_dim=args.embedding_dim)
 
     # model = encoder.to("cuda" if torch.cuda.is_available() else "cpu")
 

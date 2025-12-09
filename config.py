@@ -53,8 +53,8 @@ def get_config():
     parser.add_argument(
         "--backbone",
         type=str,
-        choices=["resnet18", "resnet18_aspp"],
-        default="resnet18_aspp"
+        choices=["resnet18", "resnet50_aspp"],
+        default="resnet50_aspp"
     )
     parser.add_argument("--embedding-dim", type=int, default=256)
 

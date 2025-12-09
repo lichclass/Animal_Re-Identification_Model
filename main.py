@@ -1,6 +1,8 @@
 # main.py
 
 import os
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
 import torch
 import pandas as pd
 import subprocess

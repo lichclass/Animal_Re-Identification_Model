@@ -69,7 +69,7 @@ def evaluate_reid(model, query_dataset, gallery_dataset, batch_size=64, device=N
             batch_size=batch_size,
             shuffle=False,
             num_workers=4,
-            pin_memory=(device.type == "cuda"),
+            pin_memory=True,
         )
         feats, labs = [], []
         for imgs, labels in loader:
