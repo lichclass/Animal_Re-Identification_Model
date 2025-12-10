@@ -221,11 +221,11 @@ def with_federation(args: argparse.Namespace, verbose=False):
             early_stopping_counter = 0
         else:
             early_stopping_counter += 1
+
+        save_training_history(results_dir, history)
     
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-    save_training_history(results_dir, history)
 
     print(f"(Test) Evaluating the Global Client...")
     loss, acc = eval_fn(
