@@ -10,11 +10,11 @@ episodes: 50
 epochs: 1
 eval_episodes: 200
 eval_every: 100
-experiment_name: federation_19
+experiment_name: federation_15
 federated: true
 inspect_annotations: false
 inspect_metadata: false
-k_shot: 5
+k_shot: 1
 lambda_align: 0.2
 lambda_triplet: 0.5
 lr: 0.0005
@@ -26,7 +26,7 @@ query: 15
 results_dir: results
 rounds: 20
 save_results: false
-segment: turtle
+segment: flipper
 split_mode: closed
 test_episodes: 400
 train: true

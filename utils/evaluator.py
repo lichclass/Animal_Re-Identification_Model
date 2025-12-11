@@ -68,7 +68,7 @@ def evaluate_reid(model, query_dataset, gallery_dataset, batch_size=64, device=N
             dataset,
             batch_size=batch_size,
             shuffle=False,
-            num_workers=4,
+            num_workers=6,
             pin_memory=True,
         )
         feats, labs = [], []

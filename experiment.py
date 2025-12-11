@@ -136,7 +136,7 @@ def with_federation(args: argparse.Namespace, verbose=False):
     # Early Stopping Configs
     early_stopping_counter = 0
     best_acc = 0.0
-    best_mAP = 0.0
+    best_rank1 = 0.0
 
     for round in range(rounds):
         if early_stopping_counter > early_stopping_patience:
@@ -212,12 +212,12 @@ def with_federation(args: argparse.Namespace, verbose=False):
         history['val_rank1'].append(rank1)
         history['val_rank5'].append(rank5)
 
-        if mAP > best_mAP:
-            best_mAP = mAP
+        if rank1 > best_rank1:
+            best_rank1 = rank1
             best_acc = acc
             model_path = results_dir / f"best_global_model.pth"
             torch.save(server.global_encoder.state_dict(), model_path)
-            print(f"     - ✓ New best model saved at round {round+1} with VAL mAP: {best_mAP*100:.2f}%")
+            print(f"     - ✓ New best model saved at round {round+1} with VAL Rank-1: {best_rank1*100:.2f}%")
             early_stopping_counter = 0
         else:
             early_stopping_counter += 1

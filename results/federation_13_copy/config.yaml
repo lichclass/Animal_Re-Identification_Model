@@ -14,7 +14,7 @@ experiment_name: federation_19
 federated: true
 inspect_annotations: false
 inspect_metadata: false
-k_shot: 5
+k_shot: 1
 lambda_align: 0.2
 lambda_triplet: 0.5
 lr: 0.0005
