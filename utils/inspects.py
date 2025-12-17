@@ -1,11 +1,12 @@
 import os
+from pathlib import Path
 import pandas as pd
 import json
 
 
 def inspect_annotations():
     DATA_DIR = "data"
-    ANNOTATIONS_PATH = os.path.join(DATA_DIR, "turtle-data", "annotations.json")
+    ANNOTATIONS_PATH = Path(DATA_DIR) / "turtle-data" / "annotations.json"
     sample_idx = 0
 
     with open(ANNOTATIONS_PATH, "r") as f:
@@ -17,62 +18,32 @@ def inspect_annotations():
     sample_img = annotations["images"][sample_idx]
     sample_annotations = annotations["annotations"][sample_idx]
 
-    print(f"""
-        =====================================================
-        SeaTurtleID2022 Dataset Annotations JSON Contents:
-        =====================================================
-
-        > JSON File Size: 
-            {file_size} bytes
-            {file_size / 1024} KB
-            {file_size / 1024 / 1024} MB
-
-        > List of Keys: 
-            {keys}
-
-        > List of Categories (count = {len(categories)}): 
-            {categories}
-
-        > Sample Image Data (index: {sample_idx}): 
-            {sample_img}
-
-        > Sample Annotation Data (index: {sample_idx}): 
-            {sample_annotations}
-
-        =====================================================
-            """)
-
+    print("=====================================================")
+    print("SeaTurtleID2022 Dataset Annotations JSON Contents:")
+    print(f"> JSON File Size: {file_size / 1024 / 1024} MB")
+    print(f"> List of Keys: {keys}")
+    print(f"> List of Categories (count = {len(categories)}): {categories}")
+    print(f"> Sample Image Data (index: {sample_idx}): {sample_img}")
+    print(f"> Sample Annotation Data (index: {sample_idx}):")
+    print(sample_annotations)
+    print("=====================================================")
 
 def inspect_metadata():
     DATA_DIR = "data"
-    ANNOTATIONS_PATH = os.path.join(DATA_DIR, "turtle-data", "metadata_splits.csv")
+    ANNOTATIONS_PATH = Path(DATA_DIR) / "turtle-data" / "metadata_splits.csv"
     samples_len = 5
 
     data = pd.read_csv(ANNOTATIONS_PATH)
-
     file_size = os.path.getsize(ANNOTATIONS_PATH)
     columns = list(data.columns)
     num_of_data = len(data)
 
-    print(f"""
-        =====================================================
-        SeaTurtleID2022 Metadata Information
-        =====================================================
-
-        > CSV File Size:
-            {file_size} bytes
-            {file_size / 1024} KB
-            {file_size / 1024 / 1024} MB
-
-        > Table Columns:
-            {columns}
-
-        > Number of Data:
-            {num_of_data}
-
-        > Sample Data:
-        {data.head(samples_len)}
-
-        =====================================================
-            """)
+    print("=====================================================")
+    print("SeaTurtleID2022 Metadata CSV Contents:")
+    print("CSV File Size: {:.2f} MB".format(file_size / 1024 / 1024))
+    print(f"Table Columns: {columns}")
+    print(f"Number of Data: {num_of_data}")
+    print(f"Sample Data (first {samples_len} rows):")
+    print(data.head(samples_len))
+    print("=====================================================")
 

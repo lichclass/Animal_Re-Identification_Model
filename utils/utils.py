@@ -8,11 +8,59 @@ from PIL import Image
 import ast
 import matplotlib.pyplot as plt
 
+import torch
+from tqdm import tqdm
 from torch.utils.data import Subset
 
 
+def train_one_epoch(model, loader, optim, loss_fn, description="Train"):
+    model.train()
+    device = next(model.parameters()).device
+    running_loss = 0.0
+    correct = 0
+    total_samples = 0
+    iterator = tqdm(loader, desc=description, leave=False)
+    for batch in iterator:
+        inputs, labels = batch
+        inputs, labels = inputs.to(device), labels.to(device)
+        optim.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, labels)
+        loss.backward()
+        optim.step()
+        batch_size = inputs.size(0)
+        running_loss += loss.item() * batch_size
+        total_samples += batch_size
+        preds = outputs.argmax(dim=1),
+        correct += (preds == labels).sum().item()
+    return running_loss / total_samples, correct / total_samples
+
+
+def evaluate_one_epoch(model, loader, loss_fn, description="Eval"):
+    model.eval()
+    device = next(model.parameters()).device
+    running_loss = 0.0
+    running_acc = 0.0
+    total_samples = 0
+    iterator = tqdm(loader, desc=description, leave=False)
+    with torch.no_grad():
+        for batch in iterator:
+            inputs, labels = batch
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            loss = loss_fn(outputs, labels)
+            batch_size = inputs.size(0)
+            running_loss += loss.item() * batch_size
+            preds = torch.argmax(outputs, dim=1)
+            acc = (preds == labels).float().mean()
+            running_acc += acc.item() * batch_size
+            total_samples += batch_size
+    loss = running_loss / total_samples
+    acc = running_acc / total_samples
+    return loss, acc
+
+
 def download_dataset():
-    """ Download and extract the Sea Turtle dataset."""
     data_dir = "data"
     dataset_dir = "turtle-data"
     dataset_link = "https://github.com/lichclass/Animal_Re-Identification_Model/raw/main/downloads/turtle-data.zip"
@@ -52,30 +100,9 @@ def download_dataset():
     print("Dataset is ready!")
 
 
-# -------------------------------------------------------------
 # Function: builds metadata splits for each segment
-# -------------------------------------------------------------
 # By: Elijah
 def build_sea_turtle_metadata(annotations, metadata, dataset_path):
-    """
-    Match bounding boxes from annotations to metadata according to category.
-    Performs a left join to add bounding box information to metadata.
-    
-    Parameters:
-    -----------
-    annotations : str or dict
-        Path to COCO format annotations JSON file or loaded annotations dict
-    metadata : str or pd.DataFrame
-        Path to metadata CSV file or loaded metadata DataFrame
-    dataset_path : str
-        Path to the dataset directory
-    
-    Returns:
-    --------
-    tuple of pd.DataFrame
-        Three DataFrames for turtle, flipper, and head categories
-    """
-
     output_metadata_names = ['turtle', 'flipper', 'head']
     exist_count = 0
 
@@ -177,33 +204,9 @@ def build_sea_turtle_metadata(annotations, metadata, dataset_path):
     return metadata_turtle, metadata_flipper, metadata_head
 
 
-# -------------------------------------------------------------
 # Function: crop images on bounding boxes
-# -------------------------------------------------------------
 # By: Elijah
 def crop_turtle(turtle_id, metadata_path, dataset_path="data/turtle-data"):
-    """
-    Crop images based on bounding boxes for a specific turtle identity.
-    
-    Parameters:
-    -----------
-    turtle_id : str
-        The turtle identity to filter (e.g., 't001', 't002', etc.)
-    metadata_path : str
-        Path to the metadata CSV file with bounding boxes (e.g., metadata_splits_turtle.csv)
-    dataset_path : str
-        Path to the dataset directory containing images
-    
-    Returns:
-    --------
-    list of dict
-        List of dictionaries containing:
-        - 'cropped_image': PIL Image object of cropped region
-        - 'file_name': original file name
-        - 'bounding_box': bounding box coordinates [x, y, width, height]
-        - 'category': category name
-        - 'identity': turtle identity
-    """
     # Load metadata
     combined_path = os.path.join(dataset_path, metadata_path)
     print(f"Loading metadata from {combined_path}")
@@ -275,21 +278,9 @@ def crop_turtle(turtle_id, metadata_path, dataset_path="data/turtle-data"):
     return cropped_results
 
 
-# -------------------------------------------------------------
 # Function: display cropped images in a grid
-# -------------------------------------------------------------
 # By: Elijah
 def display_cropped_images(cropped_results, max_display=10):
-    """
-    Display cropped images in a grid.
-    
-    Parameters:
-    -----------
-    cropped_results : list of dict
-        Results from crop_turtle function
-    max_display : int
-        Maximum number of images to display
-    """
     if not cropped_results:
         print("No images to display")
         return
