@@ -185,6 +185,7 @@ def with_federation(args: argparse.Namespace, verbose=False):
 
 
 # Function: Non-Federated Mode
+# Function: Non-Federated Mode
 def without_federation(args: argparse.Namespace, verbose=False):
     # Dataset Configs
     data_dir = args.data_dir
@@ -225,7 +226,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
     print(f"Epochs: {epochs}")
     print(f"Learning rate: {lr}")
     print(f"Optimizer: {optimizer_name}")
-    print(f"Batch size: {train_loader.batch_size}")
+    print(f"Batch size (actual/effective): {actual_batch_size}/{effective_batch_size}")
     print(f"{'='*60}\n")
 
     # Model Initialization
@@ -269,8 +270,10 @@ def without_federation(args: argparse.Namespace, verbose=False):
 
     # Early stopping setup
     best_val_acc = 0.0
+    best_epoch = 0
     early_stopping_counter = 0
     best_model_path = results_dir / "best_model.pth"
+    last_model_path = results_dir / "last_model.pth"
 
     # Training loop
     print("\n" + "="*60)
@@ -284,7 +287,8 @@ def without_federation(args: argparse.Namespace, verbose=False):
         
         # Train
         train_loss, train_acc = train_one_epoch_with_accumulation(
-            model, loss_fn, optimizer, train_loader, device, epoch, epochs, accumulation_steps=4
+            model, loss_fn, optimizer, train_loader, device, 
+            epoch, epochs, accumulation_steps
         )
         
         # Validate
@@ -305,37 +309,79 @@ def without_federation(args: argparse.Namespace, verbose=False):
         print(f"  Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.2f}%")
         print(f"  LR: {scheduler.get_last_lr()[0]:.6f}")
         
-        # Early stopping and model checkpointing
+        # Save last model checkpoint
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'loss_fn_state_dict': loss_fn.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_loss': train_loss,
+            'train_acc': train_acc,
+            'val_loss': val_loss,
+            'val_acc': val_acc,
+        }, last_model_path)
+        
+        # Save best model checkpoint
         if val_acc > best_val_acc:
             best_val_acc = val_acc
+            best_epoch = epoch
+            
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'loss_fn_state_dict': loss_fn.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'train_loss': train_loss,
+                'train_acc': train_acc,
+                'val_loss': val_loss,
                 'val_acc': val_acc,
             }, best_model_path)
+            
             print(f"  ✓ New best model saved! Val Acc: {val_acc:.2f}%")
+            print(f"  ✓ Saved to: {best_model_path}")
             early_stopping_counter = 0
         else:
             early_stopping_counter += 1
             print(f"  Early stopping counter: {early_stopping_counter}/{early_stopping_patience}")
+            print(f"  Best Val Acc so far: {best_val_acc:.2f}% (Epoch {best_epoch+1})")
         
         if early_stopping_counter >= early_stopping_patience:
-            print(f"\nEarly stopping triggered at epoch {epoch+1}")
+            print(f"\n⚠ Early stopping triggered at epoch {epoch+1}")
+            print(f"Best model was at epoch {best_epoch+1} with Val Acc: {best_val_acc:.2f}%")
             break
         
         print()
     
     # Save training history
-    print("\nSaving training history...")
-    save_training_history(history, results_dir)
+    print("\n" + "="*60)
+    print("TRAINING COMPLETED")
+    print("="*60)
+    print(f"Best Validation Accuracy: {best_val_acc:.2f}% (Epoch {best_epoch+1})")
     
-    # Load best model
-    print(f"\nLoading best model from {best_model_path}...")
-    checkpoint = torch.load(best_model_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    print(f"Best model from epoch {checkpoint['epoch']+1} with Val Acc: {checkpoint['val_acc']:.2f}%")
+    save_training_history(history, results_dir)
+    print(f"✓ Training history saved")
+    
+    # Load best model for evaluation
+    print(f"\n{'='*60}")
+    print("LOADING BEST MODEL FOR EVALUATION")
+    print(f"{'='*60}")
+    
+    if best_model_path.exists():
+        print(f"Loading best model from: {best_model_path}")
+        checkpoint = torch.load(best_model_path, map_location=device)
+        
+        model.load_state_dict(checkpoint['model_state_dict'])
+        loss_fn.load_state_dict(checkpoint['loss_fn_state_dict'])
+        
+        print(f"✓ Model loaded successfully!")
+        print(f"  - Epoch: {checkpoint['epoch']+1}")
+        print(f"  - Train Acc: {checkpoint['train_acc']:.2f}%")
+        print(f"  - Val Acc: {checkpoint['val_acc']:.2f}%")
+    else:
+        print(f"⚠ Warning: Best model not found at {best_model_path}")
+        print(f"Using last trained model instead")
     
     # Test with different k values
     print("\n" + "="*60)
@@ -358,17 +404,46 @@ def without_federation(args: argparse.Namespace, verbose=False):
         test_results[f'test_acc_k{k}'] = accuracy
     
     # Save test results
-    print("\nSaving test results...")
+    print("\n" + "="*60)
+    print("SAVING FINAL RESULTS")
+    print("="*60)
+    
     results_file = results_dir / "test_results.txt"
     with open(results_file, 'w') as f:
         f.write("="*60 + "\n")
         f.write("TEST RESULTS\n")
         f.write("="*60 + "\n\n")
-        f.write(f"Best Validation Accuracy: {best_val_acc:.2f}%\n\n")
-        for k, acc in test_results.items():
-            f.write(f"{k}: {acc:.2f}%\n")
+        f.write(f"Best Validation Accuracy: {best_val_acc:.2f}% (Epoch {best_epoch+1})\n")
+        f.write(f"Total Epochs Trained: {len(history['train_loss'])}\n\n")
+        f.write("Test Accuracies (k-NN):\n")
+        f.write("-" * 30 + "\n")
+        for k_name, acc in test_results.items():
+            f.write(f"{k_name}: {acc:.2f}%\n")
     
-    print(f"\n✓ All results saved to {results_dir}")
+    print(f"✓ Test results saved to: {results_file}")
+    
+    # Save model info
+    model_info_file = results_dir / "model_info.txt"
+    with open(model_info_file, 'w') as f:
+        f.write("="*60 + "\n")
+        f.write("MODEL INFORMATION\n")
+        f.write("="*60 + "\n\n")
+        f.write(f"Experiment: {experiment_name}\n")
+        f.write(f"Backbone: Swin-B\n")
+        f.write(f"Embedding Dim: {embedding_dim}\n")
+        f.write(f"Num Classes: {num_classes}\n")
+        f.write(f"Loss: ArcFace (s=64.0, m=0.5)\n")
+        f.write(f"Optimizer: {optimizer_name}\n")
+        f.write(f"Learning Rate: {lr}\n")
+        f.write(f"Batch Size: {actual_batch_size} (effective: {effective_batch_size})\n")
+        f.write(f"Accumulation Steps: {accumulation_steps}\n")
+        f.write(f"\nBest Model Path: {best_model_path}\n")
+        f.write(f"Last Model Path: {last_model_path}\n")
+    
+    print(f"✓ Model info saved to: {model_info_file}")
+    print(f"\n{'='*60}")
+    print(f"ALL RESULTS SAVED TO: {results_dir}")
+    print(f"{'='*60}\n")
     
     return model, loss_fn, history, test_results
     
