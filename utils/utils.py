@@ -16,9 +16,10 @@ from tqdm import tqdm
 from torch.utils.data import Subset
 
 
-def train_one_epoch(model, loss_fn, optimizer, train_loader, device, epoch, total_epochs):
+def train_one_epoch_with_accumulation(model, loss_fn, optimizer, train_loader, 
+                                      device, epoch, total_epochs, accumulation_steps):
     """
-    Train for one epoch
+    Train for one epoch with gradient accumulation
     """
     model.train()
     loss_fn.train()
@@ -27,7 +28,10 @@ def train_one_epoch(model, loss_fn, optimizer, train_loader, device, epoch, tota
     correct = 0
     total = 0
     
-    iterator = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{total_epochs}] Training", unit="batch")
+    optimizer.zero_grad()  # Zero gradients at the start
+    
+    batch_idx = 0
+    iterator = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{total_epochs}]", unit="batch")
     for batch_idx, (images, labels) in enumerate(iterator):
         images, labels = images.to(device), labels.to(device)
         
@@ -35,14 +39,21 @@ def train_one_epoch(model, loss_fn, optimizer, train_loader, device, epoch, tota
         embeddings = model(images)
         loss = loss_fn(embeddings, labels)
         
-        # Backward pass
-        optimizer.zero_grad()
+        # Normalize loss by accumulation steps
+        loss = loss / accumulation_steps
+        
+        # Backward pass (accumulate gradients)
         loss.backward()
-        optimizer.step()
         
-        total_loss += loss.item()
+        # Only update weights every accumulation_steps
+        if (batch_idx + 1) % accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
         
-        # Calculate accuracy (using the loss_fn's weights for prediction)
+        # Track metrics (use unnormalized loss for logging)
+        total_loss += loss.item() * accumulation_steps
+        
+        # Calculate accuracy
         with torch.no_grad():
             embeddings_norm = F.normalize(embeddings, p=2, dim=1)
             weight_norm = F.normalize(loss_fn.weight, p=2, dim=1)
@@ -51,8 +62,14 @@ def train_one_epoch(model, loss_fn, optimizer, train_loader, device, epoch, tota
             correct += (predictions == labels).sum().item()
             total += labels.size(0)
         
-        if (batch_idx + 1) % 10 == 0:
-            print(f"  Batch [{batch_idx+1}/{len(train_loader)}] Loss: {loss.item():.4f}")
+        if (batch_idx + 1) % (10 * accumulation_steps) == 0:
+            print(f"  Batch [{batch_idx+1}/{len(train_loader)}] "
+                  f"Loss: {loss.item() * accumulation_steps:.4f}")
+    
+    # Handle remaining batches that don't fill accumulation_steps
+    if (batch_idx + 1) % accumulation_steps != 0:
+        optimizer.step()
+        optimizer.zero_grad()
     
     avg_loss = total_loss / len(train_loader)
     avg_acc = 100 * correct / total

@@ -12,7 +12,7 @@ from torch.optim import Adam, SGD
 from utils.dataset import SeaTurtleDataset
 
 # Training and Evaluation
-from utils.utils import train_one_epoch, evaluate_one_epoch, predict_with_knn_sklearn
+from utils.utils import train_one_epoch_with_accumulation, evaluate_one_epoch, predict_with_knn_sklearn
 from modules.models import SwinB_Backbone, ArcFaceLoss
 
 # Federation
@@ -191,9 +191,19 @@ def without_federation(args: argparse.Namespace, verbose=False):
     split_mode = args.split_mode
     segment = args.segment
 
+    # Gradient Accumulation Configs
+    actual_batch_size = 32 
+    effective_batch_size = 128 
+    accumulation_steps = effective_batch_size // actual_batch_size 
+    
+    print(f"Using gradient accumulation:")
+    print(f"  Actual batch size: {actual_batch_size}")
+    print(f"  Accumulation steps: {accumulation_steps}")
+    print(f"  Effective batch size: {effective_batch_size}")
+
     # Preprocess Data
     train_dataset, val_dataset, test_dataset, train_loader, val_loader, test_loader = preprocess_data(
-        data_dir, split_mode, segment, verbose
+        data_dir, split_mode, segment, batch_size=actual_batch_size, verbose=verbose
     )
 
     # Model Configs
@@ -264,7 +274,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
 
     # Training loop
     print("\n" + "="*60)
-    print("STARTING TRAINING")
+    print("STARTING TRAINING WITH GRADIENT ACCUMULATION")
     print("="*60 + "\n")
 
     for epoch in range(epochs):
@@ -273,8 +283,8 @@ def without_federation(args: argparse.Namespace, verbose=False):
         print(f"{'='*60}")
         
         # Train
-        train_loss, train_acc = train_one_epoch(
-            model, loss_fn, optimizer, train_loader, device, epoch, epochs
+        train_loss, train_acc = train_one_epoch_with_accumulation(
+            model, loss_fn, optimizer, train_loader, device, epoch, epochs, accumulation_steps=4
         )
         
         # Validate
@@ -364,7 +374,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
     
 
 # Function: Preprocessing Pipeline
-def preprocess_data(data_dir, split_mode, segment, verbose=False):
+def preprocess_data(data_dir, split_mode, segment, batch_size=128, verbose=False):
     
     # Segment selection
     segment = segment.lower().strip()
@@ -409,7 +419,6 @@ def preprocess_data(data_dir, split_mode, segment, verbose=False):
     test_dataset  = SeaTurtleDataset(test_df, data_dir, train=False, verbose=verbose)
 
     # Building DataLoaders
-    batch_size = 128  # As per paper
     num_workers = 4
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
