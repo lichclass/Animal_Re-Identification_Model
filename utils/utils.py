@@ -8,56 +8,201 @@ from PIL import Image
 import ast
 import matplotlib.pyplot as plt
 
+import torch.nn.functional as F
+from sklearn.neighbors import KNeighborsClassifier
+
 import torch
 from tqdm import tqdm
 from torch.utils.data import Subset
 
 
-def train_one_epoch(model, loader, optim, loss_fn, description="Train"):
+def train_one_epoch(model, loss_fn, optimizer, train_loader, device, epoch, total_epochs):
+    """
+    Train for one epoch
+    """
     model.train()
-    device = next(model.parameters()).device
-    running_loss = 0.0
+    loss_fn.train()
+    
+    total_loss = 0
     correct = 0
-    total_samples = 0
-    iterator = tqdm(loader, desc=description, leave=False)
-    for batch in iterator:
-        inputs, labels = batch
-        inputs, labels = inputs.to(device), labels.to(device)
-        optim.zero_grad()
-        outputs = model(inputs)
-        loss = loss_fn(outputs, labels)
+    total = 0
+    
+    iterator = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{total_epochs}] Training", unit="batch")
+    for batch_idx, (images, labels) in enumerate(iterator):
+        images, labels = images.to(device), labels.to(device)
+        
+        # Forward pass
+        embeddings = model(images)
+        loss = loss_fn(embeddings, labels)
+        
+        # Backward pass
+        optimizer.zero_grad()
         loss.backward()
-        optim.step()
-        batch_size = inputs.size(0)
-        running_loss += loss.item() * batch_size
-        total_samples += batch_size
-        preds = outputs.argmax(dim=1)
-        correct += (preds == labels).sum().item()
-    return running_loss / total_samples, correct / total_samples
+        optimizer.step()
+        
+        total_loss += loss.item()
+        
+        # Calculate accuracy (using the loss_fn's weights for prediction)
+        with torch.no_grad():
+            embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+            weight_norm = F.normalize(loss_fn.weight, p=2, dim=1)
+            logits = F.linear(embeddings_norm, weight_norm)
+            predictions = torch.argmax(logits, dim=1)
+            correct += (predictions == labels).sum().item()
+            total += labels.size(0)
+        
+        if (batch_idx + 1) % 10 == 0:
+            print(f"  Batch [{batch_idx+1}/{len(train_loader)}] Loss: {loss.item():.4f}")
+    
+    avg_loss = total_loss / len(train_loader)
+    avg_acc = 100 * correct / total
+    
+    return avg_loss, avg_acc
 
 
-def evaluate_one_epoch(model, loader, loss_fn, description="Eval"):
+def evaluate_one_epoch(model, loss_fn, val_loader, device):
+    """
+    Evaluate on validation set
+    """
     model.eval()
-    device = next(model.parameters()).device
-    running_loss = 0.0
-    running_acc = 0.0
-    total_samples = 0
-    iterator = tqdm(loader, desc=description, leave=False)
+    loss_fn.eval()
+    
+    total_loss = 0
+    correct = 0
+    total = 0
+    
+    iterator = tqdm(val_loader, desc="Validation", unit="batch")
     with torch.no_grad():
-        for batch in iterator:
-            inputs, labels = batch
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs)
-            loss = loss_fn(outputs, labels)
-            batch_size = inputs.size(0)
-            running_loss += loss.item() * batch_size
-            preds = outputs.argmax(dim=1)
-            acc = (preds == labels).float().mean()
-            running_acc += acc.item() * batch_size
-            total_samples += batch_size
-    loss = running_loss / total_samples
-    acc = running_acc / total_samples
-    return loss, acc
+        for images, labels in iterator:
+            images, labels = images.to(device), labels.to(device)
+            
+            # Forward pass
+            embeddings = model(images)
+            loss = loss_fn(embeddings, labels)
+            
+            total_loss += loss.item()
+            
+            # Calculate accuracy
+            embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+            weight_norm = F.normalize(loss_fn.weight, p=2, dim=1)
+            logits = F.linear(embeddings_norm, weight_norm)
+            predictions = torch.argmax(logits, dim=1)
+            correct += (predictions == labels).sum().item()
+            total += labels.size(0)
+    
+    avg_loss = total_loss / len(val_loader)
+    avg_acc = 100 * correct / total
+    
+    return avg_loss, avg_acc
+
+
+def predict_with_knn_sklearn(model, train_loader, test_loader, device, k=1, metric='cosine', verbose=True):
+    """
+    k-NN prediction using scikit-learn's KNeighborsClassifier
+    
+    Args:
+        model: Trained backbone model
+        train_loader: DataLoader for training set
+        test_loader: DataLoader for test set
+        device: 'cuda' or 'cpu'
+        k: Number of neighbors (paper uses k=1)
+        metric: Distance metric ('cosine' for ArcFace, as per paper)
+        verbose: Print progress
+    
+    Returns:
+        accuracy: Test accuracy percentage
+        predictions: Predicted labels
+        true_labels: Ground truth labels
+    """
+    model.eval()
+    
+    if verbose:
+        print("\n" + "="*60)
+        print("K-NN PREDICTION WITH SCIKIT-LEARN")
+        print("="*60)
+        print(f"k={k}, metric={metric}")
+    
+    # Extract training embeddings
+    if verbose:
+        print("\nExtracting training embeddings...")
+    train_embeddings = []
+    train_labels = []
+    
+    with torch.no_grad():
+        for batch_idx, (images, labels) in enumerate(train_loader):
+            images = images.to(device)
+            embeddings = model(images)
+            
+            # Normalize embeddings (important for cosine similarity)
+            embeddings = F.normalize(embeddings, p=2, dim=1)
+            
+            train_embeddings.append(embeddings.cpu().numpy())
+            train_labels.append(labels.numpy())
+            
+            if verbose and (batch_idx + 1) % 20 == 0:
+                print(f"  Processed {batch_idx+1}/{len(train_loader)} batches")
+    
+    # Concatenate all batches
+    train_embeddings = np.concatenate(train_embeddings, axis=0)
+    train_labels = np.concatenate(train_labels, axis=0)
+    
+    if verbose:
+        print(f"Training embeddings shape: {train_embeddings.shape}")
+        print(f"Training labels shape: {train_labels.shape}")
+    
+    # Fit k-NN classifier
+    if verbose:
+        print(f"\nFitting k-NN classifier...")
+    knn = KNeighborsClassifier(
+        n_neighbors=k,
+        metric=metric,
+        algorithm='brute',  # Use brute force for cosine distance
+        n_jobs=-1  # Use all CPU cores
+    )
+    knn.fit(train_embeddings, train_labels)
+    
+    # Extract test embeddings and predict
+    if verbose:
+        print("Extracting test embeddings and predicting...")
+    test_embeddings = []
+    test_labels = []
+    
+    with torch.no_grad():
+        for batch_idx, (images, labels) in enumerate(test_loader):
+            images = images.to(device)
+            embeddings = model(images)
+            
+            # Normalize embeddings
+            embeddings = F.normalize(embeddings, p=2, dim=1)
+            
+            test_embeddings.append(embeddings.cpu().numpy())
+            test_labels.append(labels.numpy())
+            
+            if verbose and (batch_idx + 1) % 20 == 0:
+                print(f"  Processed {batch_idx+1}/{len(test_loader)} batches")
+    
+    test_embeddings = np.concatenate(test_embeddings, axis=0)
+    test_labels = np.concatenate(test_labels, axis=0)
+    
+    if verbose:
+        print(f"Test embeddings shape: {test_embeddings.shape}")
+    
+    # Predict
+    predictions = knn.predict(test_embeddings)
+    
+    # Calculate accuracy
+    correct = (predictions == test_labels).sum()
+    total = len(test_labels)
+    accuracy = 100 * correct / total
+    
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"k-NN Results (k={k}):")
+        print(f"  Accuracy: {accuracy:.2f}%")
+        print(f"  Correct: {correct}/{total}")
+        print(f"{'='*60}\n")
+    
+    return accuracy, predictions, test_labels
 
 
 def download_dataset():

@@ -1,5 +1,3 @@
-# main.py
-
 import os
 from config import get_config, save_config
 from utils.utils import download_dataset, build_sea_turtle_metadata
@@ -35,7 +33,7 @@ def main():
     # Training and Evaluation Pipelines
     if args.train:
         if args.federated: 
-            print("\nRunning federated...\n")
+            # print("\nRunning federated...\n")
             with_federation(args, verbose=True)
         else:
             print("\nRunning non-federated...\n")

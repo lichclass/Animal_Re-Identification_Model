@@ -6,16 +6,14 @@ import numpy as np
 
 from pathlib import Path
 from torch.utils.data import DataLoader
-
 from torch.optim import Adam, SGD
-from torch.nn import CrossEntropyLoss
 
 # Preprocessing
 from utils.dataset import SeaTurtleDataset
 
 # Training and Evaluation
-from utils.utils import train_one_epoch, evaluate_one_epoch
-from modules.models import SwinB_Backbone
+from utils.utils import train_one_epoch, evaluate_one_epoch, predict_with_knn_sklearn
+from modules.models import SwinB_Backbone, ArcFaceLoss
 
 # Federation
 # from fedproto.server import FedProtoServerApp
@@ -188,15 +186,15 @@ def with_federation(args: argparse.Namespace, verbose=False):
 
 # Function: Non-Federated Mode
 def without_federation(args: argparse.Namespace, verbose=False):
-    
     # Dataset Configs
     data_dir = args.data_dir
     split_mode = args.split_mode
     segment = args.segment
-    verbose = args.verbose
 
     # Preprocess Data
-    _, _, _, train_loader, val_loader, test_loader =  preprocess_data(data_dir, split_mode, segment, verbose)
+    train_dataset, val_dataset, test_dataset, train_loader, val_loader, test_loader = preprocess_data(
+        data_dir, split_mode, segment, verbose
+    )
 
     # Model Configs
     epochs = args.epochs
@@ -204,79 +202,173 @@ def without_federation(args: argparse.Namespace, verbose=False):
     optimizer_name = args.optimizer
     device = "cuda" if torch.cuda.is_available() else "cpu"
     early_stopping_patience = args.early_stopping_patience
+    experiment_name = args.experiment_name
 
-    num_classes = len(train_loader.dataset.get_identity_to_idx())
-    model = SwinB_Backbone().to(device)
-    optim = (Adam(model.parameters(), lr=lr) if optimizer_name == "adam"
-                else SGD(model.parameters(), lr=lr, momentum=0.9))
-    loss_fn = CrossEntropyLoss()
+    # Get number of classes
+    num_classes = train_dataset.get_num_classes()
+    print(f"\n{'='*60}")
+    print(f"TRAINING CONFIGURATION")
+    print(f"{'='*60}")
+    print(f"Device: {device}")
+    print(f"Number of classes: {num_classes}")
+    print(f"Embedding dimension: {args.embedding_dim}")
+    print(f"Epochs: {epochs}")
+    print(f"Learning rate: {lr}")
+    print(f"Optimizer: {optimizer_name}")
+    print(f"Batch size: {train_loader.batch_size}")
+    print(f"{'='*60}\n")
 
-    # Checking
-    input, label = next(iter(train_loader))
-    input = input.to(device)
-    output = model(input)
-    print("Model Summary:", model)
-    print(f"\n✓ Model Forward Pass Successful: Input shape {input.shape} -> Output shape {output.shape}")
-    return
+    # Model Initialization
+    embedding_dim = args.embedding_dim
+    model = SwinB_Backbone(embedding_dim=embedding_dim).to(device)
+    
+    loss_fn = ArcFaceLoss(
+        num_classes=num_classes,
+        embedding_dim=embedding_dim,
+        s=64.0,  # As per paper
+        m=0.5    # As per paper
+    ).to(device)
 
-    # best_val_acc = 0.0
-    # early_stopping = 0
+    # Optimizer setup
+    if optimizer_name == "adam":
+        optimizer = Adam(
+            list(model.parameters()) + list(loss_fn.parameters()),
+            lr=lr
+        )
+    else:
+        optimizer = SGD(
+            list(model.parameters()) + list(loss_fn.parameters()),
+            lr=lr,
+            momentum=0.9
+        )
+    
+    # Cosine annealing scheduler (as per paper)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    # train_losses = []
-    # train_accs = []
-    # val_losses = []
-    # val_accs = []
-    # for epoch in range(epochs):
-    #     train_loss, train_acc = train_one_epoch(
-    #         model, 
-    #         train_loader, 
-    #         optim, 
-    #         loss_fn, 
-    #         description=f"Epoch {epoch+1}/{epochs} - Training"
-    #     )
-    #     val_loss, val_acc = evaluate_one_epoch(
-    #         model, 
-    #         val_loader, 
-    #         loss_fn, 
-    #         description=f"Epoch {epoch+1}/{epochs} - Validation"
-    #     )   
+    # Results directory
+    results_dir = Path("results") / experiment_name
+    results_dir.mkdir(parents=True, exist_ok=True)
 
-    #     train_losses.append(train_loss)
-    #     train_accs.append(train_acc)
-    #     val_losses.append(val_loss)
-    #     val_accs.append(val_acc)
+    # Training history
+    history = {
+        'train_loss': [],
+        'train_acc': [],
+        'val_loss': [],
+        'val_acc': []
+    }
 
-    #     change = val_acc - best_val_acc
-    #     if change < args.early_threshold:
-    #         early_stopping += 1
-    #     else:
-    #         early_stopping = 0
+    # Early stopping setup
+    best_val_acc = 0.0
+    early_stopping_counter = 0
+    best_model_path = results_dir / "best_model.pth"
 
-    #     if val_acc > best_val_acc:
-    #         best_val_acc = val_acc
-    #         if verbose:
-    #             print(f"Epoch {epoch+1}/{epochs} - New best validation accuracy: {best_val_acc*100:.2f}%")
+    # Training loop
+    print("\n" + "="*60)
+    print("STARTING TRAINING")
+    print("="*60 + "\n")
+
+    for epoch in range(epochs):
+        print(f"{'='*60}")
+        print(f"EPOCH [{epoch+1}/{epochs}]")
+        print(f"{'='*60}")
         
-    #     if early_stopping > early_stopping_patience:
-    #         print("Stopping due to lack of improvement...")
-    #         break
-
-    # test_loss, test_acc = evaluate_one_epoch(
-    #     model, 
-    #     test_loader, 
-    #     loss_fn, 
-    #     description=f"Testing"
-    # )
-
-    # print(f"Test Accuracy: {test_acc*100:.2f}%, Test Loss: {test_loss:.4f}")
+        # Train
+        train_loss, train_acc = train_one_epoch(
+            model, loss_fn, optimizer, train_loader, device, epoch, epochs
+        )
         
+        # Validate
+        val_loss, val_acc = evaluate_one_epoch(model, loss_fn, val_loader, device)
+        
+        # Step scheduler
+        scheduler.step()
+        
+        # Save history
+        history['train_loss'].append(train_loss)
+        history['train_acc'].append(train_acc)
+        history['val_loss'].append(val_loss)
+        history['val_acc'].append(val_acc)
+        
+        # Print epoch summary
+        print(f"\nEpoch Summary:")
+        print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
+        print(f"  Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.2f}%")
+        print(f"  LR: {scheduler.get_last_lr()[0]:.6f}")
+        
+        # Early stopping and model checkpointing
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'loss_fn_state_dict': loss_fn.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_acc': val_acc,
+            }, best_model_path)
+            print(f"  ✓ New best model saved! Val Acc: {val_acc:.2f}%")
+            early_stopping_counter = 0
+        else:
+            early_stopping_counter += 1
+            print(f"  Early stopping counter: {early_stopping_counter}/{early_stopping_patience}")
+        
+        if early_stopping_counter >= early_stopping_patience:
+            print(f"\nEarly stopping triggered at epoch {epoch+1}")
+            break
+        
+        print()
+    
+    # Save training history
+    print("\nSaving training history...")
+    save_training_history(history, results_dir)
+    
+    # Load best model
+    print(f"\nLoading best model from {best_model_path}...")
+    checkpoint = torch.load(best_model_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    print(f"Best model from epoch {checkpoint['epoch']+1} with Val Acc: {checkpoint['val_acc']:.2f}%")
+    
+    # Test with different k values
+    print("\n" + "="*60)
+    print("TESTING WITH DIFFERENT K VALUES")
+    print("="*60)
+    
+    k_values = [1, 3, 5, 10]
+    test_results = {}
+    
+    for k in k_values:
+        print(f"\n--- Testing with k={k} ---")
+        accuracy, preds, labels = predict_with_knn_sklearn(
+            model, 
+            train_loader, 
+            test_loader, 
+            device, 
+            k=k,
+            verbose=True
+        )
+        test_results[f'test_acc_k{k}'] = accuracy
+    
+    # Save test results
+    print("\nSaving test results...")
+    results_file = results_dir / "test_results.txt"
+    with open(results_file, 'w') as f:
+        f.write("="*60 + "\n")
+        f.write("TEST RESULTS\n")
+        f.write("="*60 + "\n\n")
+        f.write(f"Best Validation Accuracy: {best_val_acc:.2f}%\n\n")
+        for k, acc in test_results.items():
+            f.write(f"{k}: {acc:.2f}%\n")
+    
+    print(f"\n✓ All results saved to {results_dir}")
+    
+    return model, loss_fn, history, test_results
+    
 
 # Function: Preprocessing Pipeline
 def preprocess_data(data_dir, split_mode, segment, verbose=False):
     
     # Segment selection
     segment = segment.lower().strip()
-    valid_segments = ["full_img","turtle", "flipper", "head"]
+    valid_segments = ["full_img", "turtle", "flipper", "head"]
     assert segment in valid_segments, f"Invalid segment: {segment}. Must be one of {valid_segments}."
 
     # Load Metadata
@@ -300,15 +392,28 @@ def preprocess_data(data_dir, split_mode, segment, verbose=False):
     val_df   = metadata_df[metadata_df[split_column] == "valid"].copy()
     test_df  = metadata_df[metadata_df[split_column] == "test"].copy()
 
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"DATASET INFORMATION")
+        print(f"{'='*60}")
+        print(f"Segment: {segment}")
+        print(f"Split mode: {split_mode}")
+        print(f"Train samples: {len(train_df)}")
+        print(f"Val samples: {len(val_df)}")
+        print(f"Test samples: {len(test_df)}")
+        print(f"{'='*60}\n")
+
     # Building Datasets
-    train_dataset = SeaTurtleDataset(train_df, data_dir, verbose=False)
-    val_dataset   = SeaTurtleDataset(val_df, data_dir, verbose=False)
-    test_dataset = SeaTurtleDataset(test_df, data_dir, verbose=False)
+    train_dataset = SeaTurtleDataset(train_df, data_dir, train=True, verbose=verbose)
+    val_dataset   = SeaTurtleDataset(val_df, data_dir, train=False, verbose=verbose)
+    test_dataset  = SeaTurtleDataset(test_df, data_dir, train=False, verbose=verbose)
 
     # Building DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
-    val_loader   = DataLoader(val_dataset, batch_size=4, shuffle=False)
-    test_loader  = DataLoader(test_dataset, batch_size=4    , shuffle=False)
+    batch_size = 128  # As per paper
+    num_workers = 4
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+    val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    test_loader  = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
     return (
         train_dataset,
