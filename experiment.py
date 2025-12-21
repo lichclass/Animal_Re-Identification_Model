@@ -12,8 +12,9 @@ from torch.optim import Adam, SGD
 from utils.dataset import SeaTurtleDataset
 
 # Training and Evaluation
-from utils.utils import train_one_epoch_with_accumulation, evaluate_one_epoch, predict_with_knn_sklearn
+from utils.utils import train_one_epoch_with_accumulation
 from modules.models import SwinB_Backbone, ArcFaceLoss
+from sklearn.neighbors import KNeighborsClassifier
 
 # Federation
 # from fedproto.server import FedProtoServerApp
@@ -183,8 +184,66 @@ def with_federation(args: argparse.Namespace, verbose=False):
 
     return
 
+@torch.no_grad()
+def extract_embeddings_and_ids(model, loader, device):
+    model.eval()
+    all_emb = []
+    all_ids = []
 
-# Function: Non-Federated Mode
+    for images, _labels, identities in loader:
+        images = images.to(device, non_blocking=True)
+
+        emb = model(images)  # (B, D)
+        emb = torch.nn.functional.normalize(emb, dim=1)  # cosine space
+
+        all_emb.append(emb.cpu())
+        all_ids.extend(list(identities))  # strings
+
+    all_emb = torch.cat(all_emb, dim=0).numpy()
+    all_ids = np.array(all_ids, dtype=object)
+    return all_emb, all_ids
+
+
+def knn_eval_cosine(train_emb, train_ids, query_emb, query_ids, k=1):
+    """
+    Cosine distance kNN: since embeddings are L2-normalized,
+    cosine similarity = dot product; cosine distance = 1 - dot.
+    sklearn KNN supports metric='cosine'.
+    """
+    knn = KNeighborsClassifier(n_neighbors=k, metric="cosine")
+    knn.fit(train_emb, train_ids)
+    pred = knn.predict(query_emb)
+    acc = float((pred == query_ids).mean())
+    return acc
+
+
+@torch.no_grad()
+def validate_with_knn(model, train_loader_for_knn, val_loader, device, ks=(1,3,5,10)):
+    train_emb, train_ids = extract_embeddings_and_ids(model, train_loader_for_knn, device)
+    val_emb, val_ids = extract_embeddings_and_ids(model, val_loader, device)
+
+    results = {}
+    for k in ks:
+        results[f"val_acc_k{k}"] = knn_eval_cosine(train_emb, train_ids, val_emb, val_ids, k=k)
+    return results
+
+
+@torch.no_grad()
+def predict_with_knn_sklearn_ids(model, train_loader, test_loader, device, k=1, verbose=False):
+    train_emb, train_ids = extract_embeddings_and_ids(model, train_loader, device)
+    test_emb, test_ids = extract_embeddings_and_ids(model, test_loader, device)
+
+    knn = KNeighborsClassifier(n_neighbors=k, metric="cosine")
+    knn.fit(train_emb, train_ids)
+    pred_ids = knn.predict(test_emb)
+
+    acc = float((pred_ids == test_ids).mean())  # 0..1
+    if verbose:
+        print(f"kNN(k={k}) acc: {acc*100:.2f}%")
+
+    return acc, pred_ids, test_ids
+
+
 # Function: Non-Federated Mode
 def without_federation(args: argparse.Namespace, verbose=False):
     # Dataset Configs
@@ -264,8 +323,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
     history = {
         'train_loss': [],
         'train_acc': [],
-        'val_loss': [],
-        'val_acc': []
+        'val_acc_knn1': []
     }
 
     # Early stopping setup
@@ -292,22 +350,29 @@ def without_federation(args: argparse.Namespace, verbose=False):
         )
         
         # Validate
-        val_loss, val_acc = evaluate_one_epoch(model, loss_fn, val_loader, device)
+        knn_val = validate_with_knn(
+            model, train_loader, val_loader, device, ks=(1,3,5,10)
+        )
+        val_acc = knn_val['val_acc_k1']
         
         # Step scheduler
         scheduler.step()
         
         # Save history
         history['train_loss'].append(train_loss)
-        history['train_acc'].append(train_acc)
-        history['val_loss'].append(val_loss)
-        history['val_acc'].append(val_acc)
+        history['train_acc'].append(train_acc)            
+        history['val_acc_knn1'].append(val_acc * 100.0)   
+
         
         # Print epoch summary
         print(f"\nEpoch Summary:")
         print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
-        print(f"  Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.2f}%")
-        print(f"  LR: {scheduler.get_last_lr()[0]:.6f}")
+        print(f"  Val Acc (kNN@1): {val_acc*100:.2f}%")
+        print(f"  Val Accs: k1={knn_val['val_acc_k1']*100:.2f}% | "
+            f"k3={knn_val['val_acc_k3']*100:.2f}% | "
+            f"k5={knn_val['val_acc_k5']*100:.2f}% | "
+            f"k10={knn_val['val_acc_k10']*100:.2f}%")
+
         
         # Save last model checkpoint
         torch.save({
@@ -318,8 +383,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
             'scheduler_state_dict': scheduler.state_dict(),
             'train_loss': train_loss,
             'train_acc': train_acc,
-            'val_loss': val_loss,
-            'val_acc': val_acc,
+            'val_acc_knn1': val_acc,
         }, last_model_path)
         
         # Save best model checkpoint
@@ -335,21 +399,20 @@ def without_federation(args: argparse.Namespace, verbose=False):
                 'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': train_loss,
                 'train_acc': train_acc,
-                'val_loss': val_loss,
-                'val_acc': val_acc,
+                'val_acc_knn1': val_acc,
             }, best_model_path)
             
-            print(f"  ✓ New best model saved! Val Acc: {val_acc:.2f}%")
+            print(f"  ✓ New best model saved! Val Acc (kNN@1): {val_acc*100:.2f}%")
             print(f"  ✓ Saved to: {best_model_path}")
             early_stopping_counter = 0
         else:
             early_stopping_counter += 1
             print(f"  Early stopping counter: {early_stopping_counter}/{early_stopping_patience}")
-            print(f"  Best Val Acc so far: {best_val_acc:.2f}% (Epoch {best_epoch+1})")
+            print(f"  Best Val Acc so far: {best_val_acc*100:.2f}% (Epoch {best_epoch+1})") 
         
         if early_stopping_counter >= early_stopping_patience:
             print(f"\n⚠ Early stopping triggered at epoch {epoch+1}")
-            print(f"Best model was at epoch {best_epoch+1} with Val Acc: {best_val_acc:.2f}%")
+            print(f"Best model was at epoch {best_epoch+1} with Val Acc: {best_val_acc*100:.2f}%")
             break
         
         print()
@@ -358,7 +421,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
     print("\n" + "="*60)
     print("TRAINING COMPLETED")
     print("="*60)
-    print(f"Best Validation Accuracy: {best_val_acc:.2f}% (Epoch {best_epoch+1})")
+    print(f"Best Validation Accuracy: {best_val_acc*100:.2f}% (Epoch {best_epoch+1})")
     
     save_training_history(history, results_dir)
     print(f"✓ Training history saved")
@@ -378,7 +441,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
         print(f"✓ Model loaded successfully!")
         print(f"  - Epoch: {checkpoint['epoch']+1}")
         print(f"  - Train Acc: {checkpoint['train_acc']:.2f}%")
-        print(f"  - Val Acc: {checkpoint['val_acc']:.2f}%")
+        print(f"  - Val Acc (kNN@1): {checkpoint['val_acc_knn1']*100:.2f}%")
     else:
         print(f"⚠ Warning: Best model not found at {best_model_path}")
         print(f"Using last trained model instead")
@@ -388,20 +451,12 @@ def without_federation(args: argparse.Namespace, verbose=False):
     print("TESTING WITH DIFFERENT K VALUES")
     print("="*60)
     
-    k_values = [1, 3, 5, 10]
     test_results = {}
-    
-    for k in k_values:
-        print(f"\n--- Testing with k={k} ---")
-        accuracy, preds, labels = predict_with_knn_sklearn(
-            model, 
-            train_loader, 
-            test_loader, 
-            device, 
-            k=k,
-            verbose=True
+    for k in [1, 3, 5, 10]: 
+        acc, preds, labels = predict_with_knn_sklearn_ids(
+            model, train_loader, test_loader, device, k=k, verbose=True
         )
-        test_results[f'test_acc_k{k}'] = accuracy
+        test_results[f'test_acc_k{k}'] = acc * 100.0
     
     # Save test results
     print("\n" + "="*60)
@@ -413,7 +468,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
         f.write("="*60 + "\n")
         f.write("TEST RESULTS\n")
         f.write("="*60 + "\n\n")
-        f.write(f"Best Validation Accuracy: {best_val_acc:.2f}% (Epoch {best_epoch+1})\n")
+        f.write(f"Best Validation Accuracy: {best_val_acc*100:.2f}% (Epoch {best_epoch+1})\n")
         f.write(f"Total Epochs Trained: {len(history['train_loss'])}\n\n")
         f.write("Test Accuracies (k-NN):\n")
         f.write("-" * 30 + "\n")
@@ -490,8 +545,9 @@ def preprocess_data(data_dir, split_mode, segment, batch_size=128, verbose=False
 
     # Building Datasets
     train_dataset = SeaTurtleDataset(train_df, data_dir, train=True, verbose=verbose)
-    val_dataset   = SeaTurtleDataset(val_df, data_dir, train=False, verbose=verbose)
-    test_dataset  = SeaTurtleDataset(test_df, data_dir, train=False, verbose=verbose)
+    shared_map = train_dataset.get_identity_to_idx()
+    val_dataset   = SeaTurtleDataset(val_df, data_dir, train=False, verbose=verbose, identity_to_idx=shared_map)
+    test_dataset  = SeaTurtleDataset(test_df, data_dir, train=False, verbose=verbose, identity_to_idx=shared_map)
 
     # Building DataLoaders
     num_workers = 4
@@ -507,12 +563,3 @@ def preprocess_data(data_dir, split_mode, segment, batch_size=128, verbose=False
         val_loader,
         test_loader
     )
-
-
-    
-
-
-
-
-
-    

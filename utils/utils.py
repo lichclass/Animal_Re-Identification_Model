@@ -32,7 +32,7 @@ def train_one_epoch_with_accumulation(model, loss_fn, optimizer, train_loader,
     
     batch_idx = 0
     iterator = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{total_epochs}]", unit="batch")
-    for batch_idx, (images, labels) in enumerate(iterator):
+    for batch_idx, (images, labels, _) in enumerate(iterator):
         images, labels = images.to(device), labels.to(device)
         
         # Forward pass
@@ -93,6 +93,13 @@ def evaluate_one_epoch(model, loss_fn, val_loader, device):
         for images, labels in iterator:
             images, labels = images.to(device), labels.to(device)
             
+            mask = labels >= 0
+            if mask.sum() == 0:
+                continue
+
+            images = images[mask]
+            labels = labels[mask]
+
             # Forward pass
             embeddings = model(images)
             loss = loss_fn(embeddings, labels)

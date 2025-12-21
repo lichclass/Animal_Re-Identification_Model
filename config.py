@@ -30,8 +30,8 @@ def get_config():
 
     # Training parameters
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "sgd"])
+    parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--optimizer", type=str, default="sgd", choices=["adam", "sgd"])
     parser.add_argument("--early-stopping-patience", type=int, default=10)
     parser.add_argument("--early-threshold", type=float, default=0.5)
 

@@ -6,7 +6,7 @@ import torchvision.transforms as T
 import pandas as pd
 
 class SeaTurtleDataset(Dataset):
-    def __init__(self, dataframe, root_dir, transform=None, train=True, verbose=False):
+    def __init__(self, dataframe, root_dir, transform=None, train=True, verbose=False, identity_to_idx=None):
         self.df = dataframe.reset_index(drop=True)
         self.root_dir = root_dir
         self.train = train
@@ -15,15 +15,10 @@ class SeaTurtleDataset(Dataset):
         if transform is None:
             if train:
                 self.transform = T.Compose([
-                    T.Resize((256, 256)),
-                    T.RandomResizedCrop(224, scale=(0.7, 1.0)),
-                    T.RandomHorizontalFlip(p=0.5),
-                    T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.15),
-                    T.RandomPerspective(distortion_scale=0.2, p=0.3),
-                    T.RandomRotation(degrees=15),
+                    T.Resize((224, 224)),
+                    T.RandAugment(num_ops=2, magnitude=9),
                     T.ToTensor(),
                     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                    T.RandomErasing(p=0.3, scale=(0.02, 0.15)),
                 ])
             else:
                 self.transform = T.Compose([
@@ -33,9 +28,12 @@ class SeaTurtleDataset(Dataset):
                 ])
         else:
             self.transform = transform
-        
+
         # Create label mappings
-        self.identity_to_idx = {ident: i for i, ident in enumerate(sorted(self.df["identity"].unique()))}
+        if identity_to_idx is None:
+            self.identity_to_idx = {ident: i for i, ident in enumerate(sorted(self.df["identity"].unique()))}
+        else:
+            self.identity_to_idx = identity_to_idx
         self.idx_to_identity = {v: k for k, v in self.identity_to_idx.items()}
         
         if verbose:
@@ -104,6 +102,6 @@ class SeaTurtleDataset(Dataset):
         img = self.transform(img)
         
         identity = row["identity"]
-        label = self.identity_to_idx[identity]
+        label = self.identity_to_idx.get(identity, -1)
         
-        return img, label
+        return img, label, identity
