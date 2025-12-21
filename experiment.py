@@ -205,60 +205,70 @@ def without_federation(args: argparse.Namespace, verbose=False):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     early_stopping_patience = args.early_stopping_patience
 
+    num_classes = len(train_loader.dataset.get_identity_to_idx())
     model = SwinB_Backbone().to(device)
     optim = (Adam(model.parameters(), lr=lr) if optimizer_name == "adam"
-        else SGD(model.parameters(), lr=lr, momentum=0.9))
+                else SGD(model.parameters(), lr=lr, momentum=0.9))
     loss_fn = CrossEntropyLoss()
 
-    best_val_acc = 0.0
-    early_stopping = 0
+    # Checking
+    input, label = next(iter(train_loader))
+    input = input.to(device)
+    output = model(input)
+    print("Model Summary:", model)
+    print(f"\n✓ Model Forward Pass Successful: Input shape {input.shape} -> Output shape {output.shape}")
+    return
 
-    train_losses = []
-    train_accs = []
-    val_losses = []
-    val_accs = []
-    for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch(
-            model, 
-            train_loader, 
-            optim, 
-            loss_fn, 
-            description=f"Epoch {epoch+1}/{epochs} - Training"
-        )
-        val_loss, val_acc = evaluate_one_epoch(
-            model, 
-            val_loader, 
-            loss_fn, 
-            description=f"Epoch {epoch+1}/{epochs} - Validation"
-        )   
+    # best_val_acc = 0.0
+    # early_stopping = 0
 
-        train_losses.append(train_loss)
-        train_accs.append(train_acc)
-        val_losses.append(val_loss)
-        val_accs.append(val_accs)
+    # train_losses = []
+    # train_accs = []
+    # val_losses = []
+    # val_accs = []
+    # for epoch in range(epochs):
+    #     train_loss, train_acc = train_one_epoch(
+    #         model, 
+    #         train_loader, 
+    #         optim, 
+    #         loss_fn, 
+    #         description=f"Epoch {epoch+1}/{epochs} - Training"
+    #     )
+    #     val_loss, val_acc = evaluate_one_epoch(
+    #         model, 
+    #         val_loader, 
+    #         loss_fn, 
+    #         description=f"Epoch {epoch+1}/{epochs} - Validation"
+    #     )   
 
-        change = val_acc - best_val_acc
-        if change < args.early_threshold:
-            early_stopping += 1
-        else:
-            early_stopping = 0
+    #     train_losses.append(train_loss)
+    #     train_accs.append(train_acc)
+    #     val_losses.append(val_loss)
+    #     val_accs.append(val_acc)
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            if verbose:
-                print(f"Epoch {epoch+1}/{epochs} - New best validation accuracy: {best_val_acc*100:.2f}%")
+    #     change = val_acc - best_val_acc
+    #     if change < args.early_threshold:
+    #         early_stopping += 1
+    #     else:
+    #         early_stopping = 0
+
+    #     if val_acc > best_val_acc:
+    #         best_val_acc = val_acc
+    #         if verbose:
+    #             print(f"Epoch {epoch+1}/{epochs} - New best validation accuracy: {best_val_acc*100:.2f}%")
         
-        if early_stopping > early_stopping_patience:
-            print("Stopping due to lack of improvement...")
+    #     if early_stopping > early_stopping_patience:
+    #         print("Stopping due to lack of improvement...")
+    #         break
 
-    test_loss, test_acc = evaluate_one_epoch(
-        model, 
-        test_loader, 
-        loss_fn, 
-        description=f"Testing"
-    )
+    # test_loss, test_acc = evaluate_one_epoch(
+    #     model, 
+    #     test_loader, 
+    #     loss_fn, 
+    #     description=f"Testing"
+    # )
 
-    print(f"Test Accuracy: {test_acc*100:.2f}%, Test Loss: {test_loss:.4f}")
+    # print(f"Test Accuracy: {test_acc*100:.2f}%, Test Loss: {test_loss:.4f}")
         
 
 # Function: Preprocessing Pipeline
@@ -296,9 +306,9 @@ def preprocess_data(data_dir, split_mode, segment, verbose=False):
     test_dataset = SeaTurtleDataset(test_df, data_dir, verbose=False)
 
     # Building DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    val_loader   = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_loader  = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+    val_loader   = DataLoader(val_dataset, batch_size=4, shuffle=False)
+    test_loader  = DataLoader(test_dataset, batch_size=4    , shuffle=False)
 
     return (
         train_dataset,

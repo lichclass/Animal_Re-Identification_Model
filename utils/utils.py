@@ -31,7 +31,7 @@ def train_one_epoch(model, loader, optim, loss_fn, description="Train"):
         batch_size = inputs.size(0)
         running_loss += loss.item() * batch_size
         total_samples += batch_size
-        preds = outputs.argmax(dim=1),
+        preds = outputs.argmax(dim=1)
         correct += (preds == labels).sum().item()
     return running_loss / total_samples, correct / total_samples
 
@@ -51,7 +51,7 @@ def evaluate_one_epoch(model, loader, loss_fn, description="Eval"):
             loss = loss_fn(outputs, labels)
             batch_size = inputs.size(0)
             running_loss += loss.item() * batch_size
-            preds = torch.argmax(outputs, dim=1)
+            preds = outputs.argmax(dim=1)
             acc = (preds == labels).float().mean()
             running_acc += acc.item() * batch_size
             total_samples += batch_size

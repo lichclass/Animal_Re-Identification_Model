@@ -9,59 +9,36 @@ class SeaTurtleDataset(Dataset):
     """
     Enhanced SeaTurtleDataset with better augmentation for Re-ID.
     """
-
     def __init__(self, dataframe, root_dir, transform=None, train=True, verbose=False):
         self.df = dataframe.reset_index(drop=True)
         self.root_dir = root_dir
         self.train = train
         self.verbose = verbose
 
-        # IMPROVED TRANSFORMS for Re-ID
         if transform is None:
             if train:
                 # Training: aggressive augmentation
                 self.transform = T.Compose([
-                    T.Resize((224, 224)),
-                    T.RandomResizedCrop(224, scale=(0.7, 1.0)),  # Random crop
+                    T.Resize((256, 256)),
+                    T.RandomResizedCrop(224, scale=(0.7, 1.0)),
                     T.RandomHorizontalFlip(p=0.5),
-                    
-                    # Color augmentation (critical for turtle shells)
-                    T.ColorJitter(
-                        brightness=0.3, 
-                        contrast=0.3,
-                        saturation=0.3,
-                        hue=0.15
-                    ),
-                    
-                    # Random perspective (handles viewpoint changes)
+                    T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3,hue=0.15),
                     T.RandomPerspective(distortion_scale=0.2, p=0.3),
-                    
-                    # Random rotation (turtles can be at any angle)
                     T.RandomRotation(degrees=15),
-                    
-                    # Random erasing (occlusion simulation)
                     T.ToTensor(),
-                    T.Normalize(
-                        mean=[0.485, 0.456, 0.406],
-                        std=[0.229, 0.224, 0.225]
-                    ),
+                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                     T.RandomErasing(p=0.3, scale=(0.02, 0.15)),
                 ])
             else:
                 self.transform = T.Compose([
                     T.Resize((224, 224)),
                     T.ToTensor(),
-                    T.Normalize(
-                        mean=[0.485, 0.456, 0.406],
-                        std=[0.229, 0.224, 0.225]
-                    )
+                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                 ])
         else:
             self.transform = transform
 
-        self.identity_to_idx = {
-            ident: i for i, ident in enumerate(sorted(self.df["identity"].unique()))
-        }
+        self.identity_to_idx = {ident: i for i, ident in enumerate(sorted(self.df["identity"].unique()))}
         self.idx_to_identity = {v: k for k, v in self.identity_to_idx.items()}
 
         if verbose:
@@ -123,13 +100,8 @@ class SeaTurtleDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.loc[idx]
-
-        # Load & crop
         img = self._load_and_crop_image(row)
         img = self.transform(img)
-
-        # Identity → integer class
         identity = row["identity"]
         label = self.identity_to_idx[identity]
-
         return img, label
