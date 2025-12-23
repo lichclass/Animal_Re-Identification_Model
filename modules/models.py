@@ -37,19 +37,26 @@ class ArcFaceLoss(nn.Module):
 
         self.criterion = nn.CrossEntropyLoss()
 
-    def forward(self, embeddings, labels):
+    def forward(self, embeddings, labels, return_logits=False):
+        if labels.min() < 0 or labels.max() >= self.num_classes:
+            raise ValueError(f"ArcFaceLoss: labels out of range. min={labels.min().item()} max={labels.max().item()} num_classes={self.num_classes}")
+
         embeddings = F.normalize(embeddings, p=2, dim=1)
         weights = F.normalize(self.weight, p=2, dim=1)
 
-        cosine = F.linear(embeddings, weights)
-        cosine = cosine.clamp(-1.0 + 1e-7, 1.0 - 1e-7)  
-        sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
+        cosine = F.linear(embeddings, weights).clamp(-1+1e-7, 1-1e-7)
+        sine = torch.sqrt(1.0 - cosine * cosine)
+
         phi = cosine * self.cos_m - sine * self.sin_m
         phi = torch.where(cosine > self.th, phi, cosine - self.mm)
 
-        one_hot = torch.zeros_like(cosine, device=embeddings.device)
+        one_hot = torch.zeros_like(cosine)
         one_hot.scatter_(1, labels.view(-1, 1).long(), 1)
+
         output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
-        output *= self.s
+        output = output * self.s
+
         loss = self.criterion(output, labels)
+        if return_logits:
+            return loss, output
         return loss

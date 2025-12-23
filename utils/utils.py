@@ -34,31 +34,38 @@ def train_one_epoch_with_accumulation(model, loss_fn, optimizer, train_loader,
     iterator = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{total_epochs}]", unit="batch")
     for batch_idx, (images, labels, _) in enumerate(iterator):
         images, labels = images.to(device), labels.to(device)
+
+        labels = labels.long()
+
+        # HARD CHECKS
+        if (labels < 0).any():
+            bad = labels[labels < 0][:10].detach().cpu().tolist()
+            raise ValueError(f"Found negative labels in TRAIN batch: {bad}")
+
+        if (labels >= loss_fn.num_classes).any():
+            bad = labels[labels >= loss_fn.num_classes][:10].detach().cpu().tolist()
+            raise ValueError(f"Found out-of-range labels in TRAIN batch: {bad} (num_classes={loss_fn.num_classes})")
         
-        # Forward pass
         embeddings = model(images)
-        loss = loss_fn(embeddings, labels)
-        
+
+        # NEW: get ArcFace logits used by the loss
+        loss, logits = loss_fn(embeddings, labels, return_logits=True)
+
         # Normalize loss by accumulation steps
         loss = loss / accumulation_steps
-        
-        # Backward pass (accumulate gradients)
         loss.backward()
-        
+
         # Only update weights every accumulation_steps
         if (batch_idx + 1) % accumulation_steps == 0:
             optimizer.step()
             optimizer.zero_grad()
-        
+
         # Track metrics (use unnormalized loss for logging)
         total_loss += loss.item() * accumulation_steps
-        
-        # Calculate accuracy
+
+        # Accuracy from ArcFace logits (same decision surface as training)
         with torch.no_grad():
-            embeddings_norm = F.normalize(embeddings, p=2, dim=1)
-            weight_norm = F.normalize(loss_fn.weight, p=2, dim=1)
-            logits = F.linear(embeddings_norm, weight_norm)
-            predictions = torch.argmax(logits, dim=1)
+            predictions = logits.argmax(dim=1)
             correct += (predictions == labels).sum().item()
             total += labels.size(0)
         

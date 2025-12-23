@@ -262,7 +262,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
     print(f"  Effective batch size: {effective_batch_size}")
 
     # Preprocess Data
-    train_dataset, val_dataset, test_dataset, train_loader, val_loader, test_loader = preprocess_data(
+    train_dataset, train_eval_dataset, val_dataset, test_dataset, train_loader, train_eval_loader, val_loader, test_loader = preprocess_data(
         data_dir, split_mode, segment, batch_size=actual_batch_size, verbose=verbose
     )
 
@@ -307,9 +307,14 @@ def without_federation(args: argparse.Namespace, verbose=False):
         )
     else:
         optimizer = SGD(
-            list(model.parameters()) + list(loss_fn.parameters()),
+            [
+                {'params': model.parameters(), "lr": lr * 0.1},
+                {'params': loss_fn.parameters(), "lr": lr},
+            ],
             lr=lr,
-            momentum=0.9
+            momentum=0.9,
+            weight_decay=1e-4,
+            nesterov=True,
         )
     
     # Cosine annealing scheduler (as per paper)
@@ -351,7 +356,7 @@ def without_federation(args: argparse.Namespace, verbose=False):
         
         # Validate
         knn_val = validate_with_knn(
-            model, train_loader, val_loader, device, ks=(1,3,5,10)
+            model, train_eval_loader, val_loader, device, ks=(1,3,5,10)
         )
         val_acc = knn_val['val_acc_k1']
         
@@ -521,8 +526,11 @@ def preprocess_data(data_dir, split_mode, segment, batch_size=128, verbose=False
     metadata_path = Path(data_dir) / segment_file_map[segment]
     assert metadata_path.exists(), f"Metadata file not found: {metadata_path}"
     metadata_df = pd.read_csv(metadata_path)
+    metadata_df = metadata_df.dropna(subset=["identity"])
+    metadata_df["identity"] = metadata_df["identity"].astype(str).str.strip()
 
-    # Split Mode Selection
+
+    # Split Mode Selection  
     split_column = {
         "closed": "split_closed",
         "random": "split_closed_random",
@@ -546,20 +554,24 @@ def preprocess_data(data_dir, split_mode, segment, batch_size=128, verbose=False
     # Building Datasets
     train_dataset = SeaTurtleDataset(train_df, data_dir, train=True, verbose=verbose)
     shared_map = train_dataset.get_identity_to_idx()
+    train_eval_dataset = SeaTurtleDataset(train_df, data_dir, train=False, verbose=False, identity_to_idx=shared_map)
     val_dataset   = SeaTurtleDataset(val_df, data_dir, train=False, verbose=verbose, identity_to_idx=shared_map)
     test_dataset  = SeaTurtleDataset(test_df, data_dir, train=False, verbose=verbose, identity_to_idx=shared_map)
 
     # Building DataLoaders
     num_workers = 4
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+    train_eval_loader = DataLoader(train_eval_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     test_loader  = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
     return (
         train_dataset,
+        train_eval_dataset,
         val_dataset,
         test_dataset,
         train_loader,
+        train_eval_loader,
         val_loader,
         test_loader
     )

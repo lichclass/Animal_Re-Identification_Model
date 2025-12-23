@@ -102,6 +102,17 @@ class SeaTurtleDataset(Dataset):
         img = self.transform(img)
         
         identity = row["identity"]
-        label = self.identity_to_idx.get(identity, -1)
-        
-        return img, label, identity
+
+        # sanitize identity (important)
+        if pd.isna(identity):
+            raise ValueError(f"NaN identity at idx={idx}, file={row.get('file_name')}")
+
+        identity = str(identity).strip()
+
+        if self.train:
+            # crash early if mapping mismatch (better than CUDA crash later)
+            label = self.identity_to_idx[identity]
+        else:
+            label = self.identity_to_idx.get(identity, -1)
+
+        return img, int(label), identity
