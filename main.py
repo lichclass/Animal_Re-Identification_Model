@@ -1,7 +1,6 @@
 import os
 from config import get_config, save_config
-from utils.utils import download_dataset, build_sea_turtle_metadata
-from utils.inspects import inspect_annotations, inspect_metadata
+from utils import download_dataset, build_dataset_splits, build_sea_turtle_metadata
 from experiment import without_federation, with_federation
 
 
@@ -27,8 +26,8 @@ def main():
         return
 
     # Inspection Tools
-    if args.inspect_annotations: inspect_annotations(); return
-    if args.inspect_metadata: inspect_metadata(); return    
+    # if args.inspect_annotations: inspect_annotations(); return
+    # if args.inspect_metadata: inspect_metadata(); return    
 
     # Training and Evaluation Pipelines
     if args.train:

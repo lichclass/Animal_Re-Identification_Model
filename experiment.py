@@ -13,7 +13,7 @@ from utils.dataset import SeaTurtleDataset
 
 # Training and Evaluation
 from utils.utils import train_one_epoch_with_accumulation
-from modules.models import SwinB_Backbone, ArcFaceLoss
+from old.models import SwinB_Backbone, ArcFaceLoss
 from sklearn.neighbors import KNeighborsClassifier
 
 # Federation
