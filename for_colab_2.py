@@ -611,9 +611,9 @@ def run():
     BACKBONE = 'convnext'
     LOSS_HEAD = 'adaface'
 
-    DATASET_DIR = Path('/content/turtle-data')
+    DATASET_DIR = Path('./data/turtle-data')
     METADATA_FILE = DATASET_DIR / f'metadata_splits_{segment}.csv'
-    RESULTS_DIR = Path("/content/results")
+    RESULTS_DIR = Path("./results")
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_NAME_DIR = RESULTS_DIR / f"{BACKBONE}_{LOSS_HEAD}_{split_mode}_{segment}"
     RESULTS_NAME_DIR.mkdir(parents=True, exist_ok=True)
@@ -716,4 +716,5 @@ def run():
     r1, r5, map_score = compute_rank1_rank5_map(test_embs, test_labels, test_encs, test_embs, test_labels, test_encs, DEVICE)
     print(f"\nFinal Test Set Evaluation -> Rank-1: {r1*100:.2f}%, Rank-5: {r5*100:.2f}%, mAP: {map_score*100:.2f}%")
 
-run()
+if __name__ == "__main__":
+    run()
