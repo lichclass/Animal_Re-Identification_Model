@@ -1,7 +1,7 @@
 import os
 from config import get_config, save_config
 from utils import download_dataset, build_dataset_splits, build_sea_turtle_metadata
-from experiment import without_federation, with_federation
+# from experiment import without_federation, with_federation
 
 
 def main():
@@ -30,14 +30,14 @@ def main():
     # if args.inspect_metadata: inspect_metadata(); return    
 
     # Training and Evaluation Pipelines
-    if args.train:
-        if args.federated: 
-            # print("\nRunning federated...\n")
-            with_federation(args, verbose=True)
-        else:
-            print("\nRunning non-federated...\n")
-            without_federation(args, verbose=True) # Non-federated (For ablation studies)
-        return
+    # if args.train:
+    #     if args.federated: 
+    #         # print("\nRunning federated...\n")
+    #         with_federation(args, verbose=True)
+    #     else:
+    #         print("\nRunning non-federated...\n")
+    #         without_federation(args, verbose=True) # Non-federated (For ablation studies)
+    #     return
 
 if __name__ == "__main__":
     main()
