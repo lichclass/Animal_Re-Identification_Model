@@ -1,5 +1,3 @@
-# Fixing for Open Set Evaluation
-
 import ast
 import math
 import random
@@ -18,7 +16,7 @@ import torch
 import torch.optim as optim
 import torch.nn.functional as F
 from torchvision import transforms as T
-from torch.optim.lr_scheduler import CosineAnnealingLR, SequentialLR, LinearLR
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.amp import grad_scaler, autocast_mode
 from torch.utils.data import DataLoader, Dataset
 from torchvision.models import convnext_base, ConvNeXt_Base_Weights
@@ -28,15 +26,13 @@ from torchvision.models import swin_b, Swin_B_Weights
 #==================== dataset.py ====================
 class SeaTurtleDataset(Dataset):
     def __init__(self, df, split_mode, split, transform=None):
-        # 1. Pre-filter the dataframe
         subset = df[df[f'split_{split_mode}'] == split].copy()
         
-        # 2. Convert to numpy/lists for O(1) access (much faster than Pandas .loc)
         self.file_names = subset["file_name"].values
-        self.labels = subset["label"].values.astype(int)
-        self.encounters = subset["encounter_label"].values.astype(int)
+        self.train_labels = subset["train_label"].fillna(-1).values.astype(int)
+        self.eval_labels = subset["eval_label"].values.astype(int)
+        self.encounter_labels = subset["encounter_label"].values.astype(int)
         
-        # 3. Pre-parse bboxes so __getitem__ is pure math/IO
         self.bboxes = []
         for b in subset["bounding_box"]:
             if isinstance(b, str) and b.strip():
@@ -57,15 +53,12 @@ class SeaTurtleDataset(Dataset):
     def __getitem__(self, idx):
         img_path = self.file_names[idx]
         img = Image.open(img_path).convert("RGB")
-        
         bbox = self.bboxes[idx]
         
-        # Cropping Logic (No redundant string parsing here)
         if bbox is not None and len(bbox) == 4:
             x, y, w, h = bbox
             W, H = img.size
             
-            # Use min/max to ensure coordinates are within image bounds
             x1, y1 = max(0, int(x)), max(0, int(y))
             x2, y2 = min(W, int(x + w)), min(H, int(y + h))
             
@@ -75,42 +68,42 @@ class SeaTurtleDataset(Dataset):
         if self.transform:
             img = self.transform(img)
 
-        return img, self.labels[idx], self.encounters[idx]
+        return img, self.train_labels[idx], self.eval_labels[idx] , self.encounter_labels[idx]
 
 
 #==================== utils.py ====================
 @torch.no_grad()
+@torch.no_grad()
 def extract_embeddings(model, loader, device, set_name=None, max_points=None):
+    model.eval()
     all_embs = []
     all_labels = []
     all_encounters = []
     collected = 0
+    
     iterator = tqdm(
         loader,
-        desc=f'Extracting embeddings for {set_name}' if set_name else 'Extracting embeddings',
-        total=min(len(loader), max_points) if max_points else len(loader)
+        desc=f'Extracting {set_name}' if set_name else 'Extracting',
     )
-    for images, labels, encounter_ids in iterator:
+    
+    for images, _, eval_labels, encounter_ids in iterator:
         images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
-        encounter_ids = encounter_ids.to(device, non_blocking=True)
 
         _, emb = model(images, None)
         emb = emb.detach().cpu()
-        labels = labels.detach().cpu()
-        encounter_ids = encounter_ids.detach().cpu()
 
         if max_points:
             remaining = max_points - collected
-            if remaining <= 0: break
+            if remaining <= 0: 
+                break
             if emb.size(0) > remaining:
                 emb = emb[:remaining]
-                labels = labels[:remaining]
+                eval_labels = eval_labels[:remaining]
                 encounter_ids = encounter_ids[:remaining]
 
         all_embs.append(emb)
-        all_labels.append(labels)
-        all_encounters.append(encounter_ids)
+        all_labels.append(eval_labels.clone()) 
+        all_encounters.append(encounter_ids.clone())
 
         collected += emb.size(0)
         if max_points and collected >= max_points:
@@ -247,6 +240,10 @@ def set_seed(seed):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def distribute_train_data_to_clients(train_df, split_mode, num_clients):
+    clients_data = 
 
 
 #==================== backbone.py ====================
@@ -415,202 +412,109 @@ class AdaFace(nn.Module):
         # scale
         scaled_cosine_m = cosine * self.s
         return scaled_cosine_m, embeddings
+    
+
+#==================== federated.py ====================
+class FederatedClient:
+    def __init__(self, train_df, args):
+        self.train_df = train_df
+        self.args = args
+
+    def get_dataset(self):
+        pass
+
+    def train(self):
+        pass
+    
 
 
 #==================== run.py ====================
 def run():
-    
     torch.set_float32_matmul_precision('high')
 
-    split_mode = 'closed'
-    segment = 'head'
+    args = {
+        # Global Config
+        'seed': 42,
 
-    BACKBONE = 'convnext'
-    LOSS_HEAD = 'adaface'
+        # Data Config
+        'split_mode': 'closed', 
+        'segment': 'head', # Valid values are 'flipper', 'head', 'turtle', 'full'
 
-    DATASET_DIR = Path('/content/turtle-data')
-    METADATA_FILE = DATASET_DIR / f'metadata_splits_{segment}.csv'
-    RESULTS_DIR = Path("/content/results")
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    RESULTS_NAME_DIR = RESULTS_DIR / f"{BACKBONE}_{LOSS_HEAD}_{split_mode}_{segment}"
-    RESULTS_NAME_DIR.mkdir(parents=True, exist_ok=True)
-    MODEL_PATH = RESULTS_NAME_DIR / "best_model.pth"
-    TSNE_PLOTS_DIR = RESULTS_NAME_DIR / "tsne_plots"
-    TSNE_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+        # Logging Config
+        'dataset_dir': '/content/turtle-data',
+        'results_path': '/content/results',
+        'max_points_eval': 2000,
+        
+        # Model Config
+        'backbone': 'convnext',
+        'head': 'adaface',
+        'embedding_dim': 512,
+        'dropout': 0.3,
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        'margin': 0.4,
+        'scale': 64.0,
+        't_alpha': 0.01,
+        'concentration': 0.333,
 
-    df = pd.read_csv(METADATA_FILE)
-    df['file_name'] = df['file_name'].apply(lambda x: DATASET_DIR / x)
-    df = df[['file_name', 'identity', 'date', f'split_{split_mode}', 'bounding_box']]
-    identities = df['identity'].unique().tolist()
-    identity_to_index = {identity: idx for idx, identity in enumerate(identities)}
-    index_to_identity = {idx: identity for identity, idx in identity_to_index.items()}
-    df['label'] = df['identity'].map(identity_to_index)
-    df['encounter_identity_date'] = df['identity'].astype(str) + "_" + df['date'].astype(str)
-    unique_encounters = df['encounter_identity_date'].unique().tolist()
-    encounter_id_to_index = {encounter: idx for idx, encounter in enumerate(unique_encounters)}
-    index_to_encounter_id = {idx: encounter for encounter, idx in encounter_id_to_index.items()}
-    df['encounter_label'] = df['encounter_identity_date'].map(encounter_id_to_index)
+        # Train Configs
+        'optimizer': 'adamw',
+        'criterion': None,
+        'scheduler': None,
+        'num_epochs': 100,
+        'early_stopping_patience': 10,
+        'learning_rate': 1e-4,
+        'weight_decay': 1e-4,
+        'momentum': 0.9,
 
-    # Final Columns: ['file_name', 'identity', 'date', f'split_{split_mode}', 'bounding_box', 'label', 'encounter_identity_date', 'encounter_label']
-
-    train_set, val_set, test_set = build_dataset_splits(df, split_mode)
-    print("Train/Val/Test sizes:", len(train_set), len(val_set), len(test_set))
-
-    set_seed(42)
-
-    EPOCHS = 100
-    LEARNING_RATE = 1e-4
-
-    if LOSS_HEAD == 'adaface':
-        model = build_model(embedding_dim=512, num_classes=len(identities), backbone_type=BACKBONE, head_type=LOSS_HEAD, pretrained_backbone=True, dropout=0.3, m=0.4, h=0.333, s=64.0, t_alpha=0.01)
-    elif LOSS_HEAD == 'arcface':
-        model = build_model(embedding_dim=512, num_classes=len(identities), backbone_type=BACKBONE, head_type=LOSS_HEAD, pretrained_backbone=True, dropout=0.3, s=64.0, m=0.5)
-
-    if MODEL_PATH.exists():
-        model.load_state_dict(torch.load(MODEL_PATH))
-        print(f"Loaded model weights from {MODEL_PATH}")
-
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {DEVICE}")
-
-    model = model.to(DEVICE)
-
-    CRITERION = torch.nn.CrossEntropyLoss()
-    OPTIMIZER = 'adam'
-    SCALER = grad_scaler.GradScaler()
-
-    if OPTIMIZER == 'sgd':
-        OPTIMIZER = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9, weight_decay=5e-4)
-    elif OPTIMIZER == 'adam':
-        OPTIMIZER = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=5e-2)
-
-    warmup_epochs = 5
-    main_scheduler = CosineAnnealingLR(OPTIMIZER, T_max=EPOCHS - warmup_epochs, eta_min=1e-6)
-    warmup_scheduler = LinearLR(OPTIMIZER, start_factor=0.1, total_iters=warmup_epochs)
-    SCHEDULER = SequentialLR(OPTIMIZER, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs])
-
-    BATCH_SIZE = 128
-    NUM_WORKERS = 8
-    PIN_MEMORY = True
-    PERSISTENT_WORKERS = True
-    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY, persistent_workers=PERSISTENT_WORKERS)
-    val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY, persistent_workers=PERSISTENT_WORKERS)
-    test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY, persistent_workers=PERSISTENT_WORKERS)
-
-    EARLY_STOPPING_PATIENCE = 10
-    BEST_RANK1 = 0.0
-    BEST_RANK5 = 0.0
-    BEST_MAP = 0.0
-
-    patience_counter = 0
-    eval_every = 1
-
-    history = {
-        "train_loss": [],
-        "val_loss": [],
-        "val_rank1": [],
-        "val_rank5": [],
-        "val_map": [],
+        # DataLoader Configs
+        'batch_size': 128,
+        'num_workers': 12,
+        'pin_memory': True,
+        'persistent_workers': True,
     }
 
-    for epoch in range(1, EPOCHS + 1):
+    # Setting seed
+    set_seed(args['seed'])
 
-        # Training phase
-        model.train()
-        running_loss = 0.0
-        iterator = tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS} - Training")
-        for images, labels, _ in iterator:
-            images = images.to(DEVICE, non_blocking=True)
-            labels = labels.to(DEVICE, non_blocking=True)
-            OPTIMIZER.zero_grad()
-            with autocast_mode.autocast(device_type='cuda', dtype=torch.bfloat16):
-                logits, _ = model(images, labels)
-                loss = CRITERION(logits, labels)
-            loss.backward()
-            OPTIMIZER.step()
-            running_loss += loss.item() * images.size(0)
-            iterator.set_postfix(loss=loss.item())
-        SCHEDULER.step()
-        epoch_loss = running_loss / len(train_set)
-        print(f"Epoch {epoch} Training Loss: {epoch_loss:.4f}")
+    print("Data: Configs:")
+    print("Segment: ", args['segment'])
+    print("Split Mode: ", args['split_mode'])
 
-        # Evaluation phase
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            iterator = tqdm(val_loader, desc=f"Epoch {epoch}/{EPOCHS} - Validation")
-            for images, labels, _ in iterator:
-                images = images.to(DEVICE, non_blocking=True)
-                labels = labels.to(DEVICE, non_blocking=True)
-                logits, _ = model(images, labels)
-                loss = CRITERION(logits, labels)
-                val_loss += loss.item() * images.size(0)
-                iterator.set_postfix(loss=loss.item())
-        val_loss /= len(val_set)
-        print(f"Epoch {epoch} Validation Loss: {val_loss:.4f}")
+    # Data Loading
+    data_dir = Path(args['dataset_dir'])
+    metadata = f'metadata_splits.csv' if args['segment'] == 'full' else f'metadata_splits_{args["segment"]}.csv'
+    df = pd.read_csv(data_dir / metadata)
+    df['file_name'] = df['file_name'].apply(lambda x: str(data_dir / x))
 
-        history["train_loss"].append(epoch_loss)
-        history["val_loss"].append(val_loss)
+    # Required Columns only
+    if args['segment'] == 'full':
+        df = df[['file_name', 'identity', 'date', f'split_{args["split_mode"]}']]
+    else:
+        df = df[['file_name', 'identity', 'date', f'split_{args["split_mode"]}', 'bounding_box']]
+    
+    # Add Encounter Labels
+    df['encounter'] = df['identity'].astype(str) + '_' + df['date'].astype(str)
+    unique_encounters = df['encounter'].unique().tolist()
+    encounter_id_to_idx = {encounter: idx for idx, encounter in enumerate(unique_encounters)}
+    idx_to_encounter_id = {idx: encounter for encounter, idx in encounter_id_to_idx.items()}
+    df['encounter_label'] = df['encounter'].map(encounter_id_to_idx)
 
-        # Perform Periodic Re-ID Evaluation
-        do_eval = (epoch % eval_every == 0) or ((epoch + 1) % eval_every == 0)
-        if do_eval:
-            val_embs, val_labels, val_encounters = extract_embeddings(model, val_loader, DEVICE, set_name='Val')
+    # Global Identity to Label Mapping
+    all_identities = sorted(df['identity'].unique().tolist())
+    eval_id_to_idx = {identity: idx for idx, identity in enumerate(all_identities)}
+    df['eval_label'] = df['identity'].map(eval_id_to_idx)
 
-            rank1, rank5, mAP = compute_rank1_rank5_map(
-                val_embs, val_labels, val_encounters,
-                val_embs, val_labels, val_encounters,
-                device=DEVICE
-            )
-            print(f"Epoch {epoch} Validation Rank-1: {rank1*100:.2f}%, Rank-5: {rank5*100:.2f}%, mAP: {mAP*100:.2f}%")
+    # Train Identity t0 Label Mapping
+    train_df_raw = df[df[f'split_{args["split_mode"]}'] == 'train']
+    train_identities = sorted(train_df_raw['identity'].unique().tolist())
+    train_id_to_idx = {identity: idx for idx, identity in enumerate(train_identities)}
+    df['train_label'] = df['identity'].map(train_id_to_idx)
 
-            history["val_rank1"].append(rank1)
-            history["val_rank5"].append(rank5)
-            history["val_map"].append(mAP)
+    # Generate datasets
+    train_set, val_set, test_set = build_dataset_splits(df, args['split_mode'])
 
-            if rank1 > BEST_RANK1:
-                BEST_RANK1 = rank1
-                BEST_RANK5 = rank5
-                BEST_MAP = mAP
-                torch.save(model.state_dict(), MODEL_PATH)
-                print(f"✅ New best model saved with Rank-1: {BEST_RANK1*100:.2f}%")
+    # Distribute to clients
+    clients = 
 
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= EARLY_STOPPING_PATIENCE:
-                    print("Early stopping triggered.")
-                    print(f"Stopped at epoch {epoch}.")
-                    break
-    print(f"Training completed. Best Validation Rank-1: {BEST_RANK1*100:.2f}%, Rank-5: {BEST_RANK5*100:.2f}%, mAP: {BEST_MAP*100:.2f}%")
-
-    plot_loss_curve(history, RESULTS_NAME_DIR / "loss_curve.png")
-
-    # Final Testing Phase
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-    model.eval()
-
-    test_embs, test_labels, test_encounters = extract_embeddings(model, test_loader, DEVICE, set_name='Test')
-    rank1, rank5, mAP = compute_rank1_rank5_map(
-        test_embs, test_labels, test_encounters,
-        test_embs, test_labels, test_encounters,
-        device=DEVICE
-    )
-    print(f"Final Test Set Results - Rank-1: {rank1*100:.2f}%, Rank-5: {rank5*100:.2f}%, mAP: {mAP*100:.2f}%")
-    with open(RESULTS_NAME_DIR / "test_results.txt", "w") as f:
-        f.write(f"Re-identification Test Set Results:\n")
-        f.write(f"Rank-1: {rank1*100:.2f}%\n")
-        f.write(f"Rank-5: {rank5*100:.2f}%\n")
-        f.write(f"mAP: {mAP*100:.2f}%\n")
-
-    emb, lab = test_embs.cpu().numpy(), test_labels.cpu().numpy()
-    MAX_POINTS = 2000
-    if emb.shape[0] > MAX_POINTS:
-        idx = np.random.RandomState(42).choice(emb.shape[0], MAX_POINTS, replace=False)
-        emb = emb[idx]
-        lab = lab[idx]
-
-    # Plot a T-SNE of the test embeddings
-    plot_tsne(emb, lab, title="T-SNE of Test Embeddings", save_path=TSNE_PLOTS_DIR / "tsne_query_test.png")
-
-run()
+if __name__ == "__main__":
+    run()

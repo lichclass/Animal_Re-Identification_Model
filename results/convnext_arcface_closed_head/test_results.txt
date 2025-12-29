@@ -1,4 +1,0 @@
-Re-ID Results (Gallery=train, Query=test):
-  Rank-1: 0.35%
-  Rank-5: 2.14%
-  mAP:    0.59%

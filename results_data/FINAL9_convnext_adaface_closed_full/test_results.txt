@@ -1,0 +1,36 @@
+Re-identification Test Set Results:
+Rank-1: 35.73%
+Rank-5: 48.84%
+mAP: 21.82%
+Best Validation Epoch: 41
+Final epoch: 51
+
+Configs:
+{   'backbone': 'convnext',
+    'batch_size': 128,
+    'concentration': 0.2,
+    'criterion': 'cross_entropy',
+    'dataset_dir': '/content/turtle-data',
+    'device': 'cuda',
+    'dropout': 0.3,
+    'early_stopping_patience': 10,
+    'embedding_dim': 512,
+    'head': 'adaface',
+    'learning_rate': 0.0001,
+    'margin': 0.35,
+    'max_points_eval': 2000,
+    'momentum': 0.9,
+    'num_epochs': 100,
+    'num_workers': 12,
+    'optimizer': 'adamw',
+    'persistent_workers': True,
+    'pin_memory': True,
+    'results_path': '/content/results',
+    'scale': 64.0,
+    'scheduler': 'cosine annealing with linear warmup (SequentialLR)',
+    'seed': 42,
+    'segment': 'full',
+    'split_mode': 'closed',
+    't_alpha': 0.01,
+    'warmup_epochs': 5,
+    'weight_decay': 0.0001}

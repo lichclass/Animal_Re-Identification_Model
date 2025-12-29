@@ -715,6 +715,18 @@ def run():
     test_embs, test_labels, test_encs = extract_embeddings(server.global_backbone, test_loader, DEVICE, set_name='Test')
     r1, r5, map_score = compute_rank1_rank5_map(test_embs, test_labels, test_encs, test_embs, test_labels, test_encs, DEVICE)
     print(f"\nFinal Test Set Evaluation -> Rank-1: {r1*100:.2f}%, Rank-5: {r5*100:.2f}%, mAP: {map_score*100:.2f}%")
+    with open(RESULTS_NAME_DIR / "test_results.txt", "w") as f:
+        f.write(f"Re-identification Test Set Results:\n")
+        f.write(f"Rank-1: {r1*100:.2f}%\n")
+        f.write(f"Rank-5: {r5*100:.2f}%\n")
+        f.write(f"mAP: {map_score*100:.2f}%\n")
 
-if __name__ == "__main__":
-    run()
+    emb, lab = test_embs.cpu().numpy(), test_labels.cpu().numpy()
+    MAX_POINTS = 2000
+    if emb.shape[0] > MAX_POINTS:
+        idx = np.random.RandomState(42).choice(emb.shape[0], MAX_POINTS, replace=False)
+        emb = emb[idx]
+        lab = lab[idx]
+    plot_tsne(emb, lab, title="T-SNE of Test Embeddings", save_path=TSNE_PLOTS_DIR / "tsne_query_test.png")
+
+run()
