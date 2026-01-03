@@ -585,7 +585,6 @@ def run():
         scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs])
         args['scheduler'] = 'cosine annealing with linear warmup (SequentialLR)'
 
-
         # Training Loop
         best_rank1 = 0.
         best_rank5 = 0.

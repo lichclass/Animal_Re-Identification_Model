@@ -10,7 +10,7 @@ from torchvision.models import (
 def build_backbone(embedding_dim=512, model_type='convnext', pretrained=True, dropout=0.1):
     if model_type == 'convnext':
         return ConvNeXtBackbone(embedding_dim, pretrained, dropout)
-    if model_type == 'swin':
+    elif model_type == 'swin':
         return SwinTransformerBackbone(embedding_dim, pretrained, dropout)
     else:
         raise ValueError(f"Unsupported backbone type: {model_type}")
@@ -42,8 +42,15 @@ class ConvNeXtBackbone(nn.Module):
         else:
             emb = F.normalize(emb, dim=1)
             return emb
+    
+    def forward_raw(self, x):
+        feat = self.backbone(x)
+        feat = self.dropout(feat)
+        emb = self.proj(feat)
+        return emb
 
 
+# Swin Transformer Backbone
 class SwinTransformerBackbone(nn.Module):
     def __init__(self, embedding_dim=512, pretrained=True, dropout=0.1):
         super().__init__()
@@ -69,3 +76,9 @@ class SwinTransformerBackbone(nn.Module):
         else:
             emb = F.normalize(emb, dim=1)
             return emb
+    
+    def forward_raw(self, x):
+        feat = self.backbone(x)
+        feat = self.dropout(feat)
+        emb = self.proj(feat)
+        return emb

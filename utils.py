@@ -10,51 +10,81 @@ from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 
+from pathlib import Path
 from tqdm import tqdm
+from collections import Counter
 from sklearn.manifold import TSNE
 from sklearn.metrics import average_precision_score
 
 import torch
 import torch.nn as nn
 from torchvision import transforms as T
+import torch.nn.functional as F
 
 from backbone import build_backbone
 from head import build_head
 from dataset import SeaTurtleDataset
 
 
+def prep_dataframe(args):
+    # Data Loading
+    data_dir = Path(args.data_dir)
+    metadata = f'metadata_splits.csv' if args['segment'] == 'full' else f'metadata_splits_{args["segment"]}.csv'
+    df = pd.read_csv(data_dir / metadata)
+    df['file_name'] = df['file_name'].apply(lambda x: str(data_dir / x))
+
+    # Required Columns only
+    required_cols = ['file_name', 'identity', 'date', f'split_{args.split_mode}']
+    if args.segment != 'full' and 'bounding_box' in df.columns:
+        required_cols.append('bounding_box')
+    df = df[required_cols]
+
+    # Add Encounter Labels
+    df['encounter'] = df['identity'].astype(str) + '_' + df['date'].astype(str)
+    unique_encounters = df['encounter'].unique().tolist()
+    encounter_id_to_idx = {encounter: idx for idx, encounter in enumerate(unique_encounters)}
+    idx_to_encounter_id = {idx: encounter for encounter, idx in encounter_id_to_idx.items()}
+    df['encounter_label'] = df['encounter'].map(encounter_id_to_idx)
+
+    # Global Identity Mapping (For Evaluation)
+    all_identities = sorted(df['identity'].unique().tolist())
+    eval_id_to_idx = {identity: idx for idx, identity in enumerate(all_identities)}
+    df['eval_label'] = df['identity'].map(eval_id_to_idx)
+
+    return df
+
+
 @torch.no_grad()
 def extract_embeddings(model, loader, device, set_name=None, max_points=None):
+    model.eval()
     all_embs = []
     all_labels = []
     all_encounters = []
     collected = 0
+    
     iterator = tqdm(
         loader,
-        desc=f'Extracting embeddings for {set_name}' if set_name else 'Extracting embeddings',
-        total=min(len(loader), max_points) if max_points else len(loader)
+        desc=f'Extracting {set_name}' if set_name else 'Extracting',
     )
-    for images, labels, encounter_ids in iterator:
+    
+    for images, _, eval_labels, encounter_ids in iterator:
         images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
-        encounter_ids = encounter_ids.to(device, non_blocking=True)
 
         _, emb = model(images, None)
         emb = emb.detach().cpu()
-        labels = labels.detach().cpu()
-        encounter_ids = encounter_ids.detach().cpu()
 
         if max_points:
             remaining = max_points - collected
-            if remaining <= 0: break
+            if remaining <= 0: 
+                break
             if emb.size(0) > remaining:
                 emb = emb[:remaining]
-                labels = labels[:remaining]
+                eval_labels = eval_labels[:remaining]
                 encounter_ids = encounter_ids[:remaining]
 
         all_embs.append(emb)
-        all_labels.append(labels)
-        all_encounters.append(encounter_ids)
+        all_labels.append(eval_labels.clone()) 
+        all_encounters.append(encounter_ids.clone())
 
         collected += emb.size(0)
         if max_points and collected >= max_points:
@@ -68,7 +98,8 @@ def extract_embeddings(model, loader, device, set_name=None, max_points=None):
 
 
 @torch.no_grad()
-def compute_rank1_rank5_map(query_embs, query_labels, query_encounters, gallery_embs, gallery_labels, gallery_encounters, device):
+def compute_rank1_rank5_map(query_embs, query_labels, query_encounters, gallery_embs, gallery_labels, gallery_encounters, device, encounter_based=None):
+    
     query_embs = query_embs.to(device)
     query_labels = query_labels.to(device)
     query_encounters = query_encounters.to(device)
@@ -76,48 +107,81 @@ def compute_rank1_rank5_map(query_embs, query_labels, query_encounters, gallery_
     gallery_labels = gallery_labels.to(device)
     gallery_encounters = gallery_encounters.to(device)
 
+    # Embedding Averaging per Encounter
+    if encounter_based == 'emb_avg':
+        unique_q_encs = torch.unique(query_encounters)
+        agg_embs, agg_labels, agg_encs = [], [], []
+        for enc in unique_q_encs:
+            mask = (query_encounters == enc)
+            mean_emb = F.normalize(query_embs[mask].mean(dim=0, keepdim=True), p=2, dim=1)
+            agg_embs.append(mean_emb)
+            agg_labels.append(query_labels[mask][0:1])
+            agg_encs.append(enc.view(1))
+        query_embs = torch.cat(agg_embs, dim=0)
+        query_labels = torch.cat(agg_labels, dim=0)
+        query_encounters = torch.cat(agg_encs, dim=0)
+    
     sim_matrix = torch.mm(query_embs, gallery_embs.t())
-
     num_queries = query_embs.size(0)
-    rank1_count = 0
-    rank5_count = 0
-    ap_sum = 0.0
-    valid_queries = 0
+    rank1_count, rank5_count, ap_sum, valid_queries = 0, 0, 0.0, 0
 
-    for i in range(num_queries):
-        q_lab = query_labels[i]
-        q_enc = query_encounters[i]
+    # Majority Vote per Encounter
+    if encounter_based == 'major_vote':
+        unique_q_encs = torch.unique(query_encounters)
+        for enc in unique_q_encs:
+            indices = (query_encounters == enc).nonzero(as_tuple=True)[0]
+            votes = []
+            q_lab = query_labels[indices[0]]
 
-        valid_mask = (gallery_encounters != q_enc)
+            for idx in indices:
+                valid_mask = (gallery_encounters != enc)
+                if not (gallery_labels[valid_mask] == q_lab).any(): 
+                    continue
+                
+                sims = sim_matrix[idx][valid_mask]
+                top1_idx_in_valid = torch.argmax(sims)
+                predicted_label = gallery_labels[valid_mask][top1_idx_in_valid].item()
+                votes.append(predicted_label)
 
-        is_positive = (gallery_labels == q_lab)
-        if not (is_positive & valid_mask).any():
-            continue
+            if not votes: 
+                continue
+            valid_queries += 1
+            
+            winner = Counter(votes).most_common(1)[0][0]
+            if winner == q_lab.item():
+                rank1_count += 1
+                rank5_count += 1
+    
+    # Standard per-Image Evaluation
+    else:
+        for i in range(num_queries):
+            q_lab, q_enc = query_labels[i], query_encounters[i]
+            valid_mask = (gallery_encounters != q_enc)
 
-        valid_queries += 1
+            if not (gallery_labels[valid_mask] == q_lab).any(): 
+                continue
 
-        query_sims = sim_matrix[i][valid_mask].cpu().numpy()
-        query_ground_truth = (gallery_labels[valid_mask] == q_lab).cpu().numpy()
+            valid_queries += 1
+            query_sims = sim_matrix[i][valid_mask].cpu().numpy()
+            query_gt = (gallery_labels[valid_mask] == q_lab).cpu().numpy()
 
-        sorted_indices = np.argsort(query_sims)[::-1]
-        sorted_gt = query_ground_truth[sorted_indices]
+            sorted_indices = np.argsort(query_sims)[::-1]
+            sorted_gt = query_gt[sorted_indices]
 
-        if sorted_gt[0]:
-            rank1_count += 1
-        if sorted_gt[:5].any():
-            rank5_count += 1
-
-        ap_sum += average_precision_score(query_ground_truth, query_sims)
-
-    if valid_queries == 0:
+            if sorted_gt[0]: rank1_count += 1
+            if sorted_gt[:5].any(): rank5_count += 1
+            ap_sum += average_precision_score(query_gt, query_sims)
+    
+    if valid_queries == 0: 
         return 0.0, 0.0, 0.0
-
+    
+    print(f"  Valid queries: {valid_queries}/{num_queries} ({100*valid_queries/num_queries:.1f}%)")
     return rank1_count / valid_queries, rank5_count / valid_queries, ap_sum / valid_queries
 
 
 def build_dataset_splits(df, split_mode):
     transforms_train = T.Compose([
-        T.Resize((224, 224)),
+        T.Resize((384, 384)),
         T.RandomHorizontalFlip(p=0.5),
         T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
         T.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1)),
@@ -125,7 +189,7 @@ def build_dataset_splits(df, split_mode):
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
     transforms_test = T.Compose([
-        T.Resize((224, 224)),
+        T.Resize((384, 384)),
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
@@ -172,16 +236,16 @@ def plot_tsne(embeddings, labels, title='t-SNE Embeddings', save_path=None):
         plt.savefig(save_path, dpi=300)
 
 
-def plot_loss_curve(history, save_path=None):
+def plot_cmc_curve(history, save_path=None):
     plt.figure(figsize=(12, 8))
-    plt.plot(history['train_loss'], label='Train Loss')
-    plt.plot(history['val_loss'], label='Validation Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Loss Curve')
+    plt.plot(history['val_rank1'], label='Rank-1')
+    plt.plot(history['val_rank5'], label='Rank-5')
+    plt.xlabel('Round')
+    plt.ylabel('Accuracy')
+    plt.title('Top-k curves over Rounds')
     plt.legend()
     if save_path:
-        plt.savefig(save_path)
+        plt.savefig(save_path, dpi=300)
 
 
 def set_seed(seed):
@@ -191,6 +255,34 @@ def set_seed(seed):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def partition_train_data(train_df, num_clients, overlap_ratio=0.1, verbose=False):
+    all_identities = sorted(train_df['identity'].unique().tolist())
+    random.shuffle(all_identities)
+    
+    num_shared = int(len(all_identities) * overlap_ratio)
+    shared_ids = all_identities[:num_shared]
+    exclusive_ids = all_identities[num_shared:]
+    
+    if verbose:
+        print(f"Partitioning training data into {num_clients} clients with {overlap_ratio*100:.1f}% overlap...")
+        print(f"  Total identities: {len(all_identities)}")
+        print(f"  Shared identities (overlap): {num_shared}")
+        print(f"  Exclusive identities to partition: {len(exclusive_ids)}")
+    
+    id_chunks = np.array_split(exclusive_ids, num_clients)
+    
+    client_dfs = []
+    for i in range(num_clients):
+        client_ids = list(id_chunks[i]) + shared_ids
+        client_df = train_df[train_df['identity'].isin(client_ids)].copy().reset_index(drop=True)
+        
+        if verbose:
+            print(f"  Client {i}: {len(client_df)} images, {len(client_ids)} identities")
+        client_dfs.append(client_df)
+    print("Partitioning complete.")
+    return client_dfs
 
 def download_dataset():
     data_dir = "data"
