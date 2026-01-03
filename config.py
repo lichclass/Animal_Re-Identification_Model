@@ -32,7 +32,7 @@ def get_config():
     parser.add_argument("--metadata-splits", type=str, default="data/metadata_splits.csv")
     parser.add_argument("--results-path", type=str, default="results")
     parser.add_argument("--split-mode", type=str, default="closed", help="closed, open") # closed, open
-    parser.add_argument("--segment", type=str, default="turtle") # turtle, flipper, head, full
+    parser.add_argument("--segment", type=str, default="head") # turtle, flipper, head, full
     
     # Model parameters
     parser.add_argument("--backbone", type=str, default="convnext", choices=["convnext", "swin"])

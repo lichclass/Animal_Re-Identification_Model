@@ -28,6 +28,7 @@ def main():
     if args.run_test:
         df = prep_dataframe(args)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Using device: {device}")
 
         if args.federated:
             pass
@@ -73,15 +74,21 @@ def main():
                 "major_vote": "Encounter-Level (Majority Vote)",
                 "emb_avg": "Encounter-Level (Embedding Average)"
             }
-            print(f"Test Results - Rank-1: {rank1:.4f}, Rank-5: {rank5:.4f}, mAP: {mAP:.4f}")
-            with open(Path(args.test_results_dir) / "test_results.txt", "w") as f:
-                f.write(f"Test Results using {test_method[args.test_method]}):")
+
+            test_results_dir = Path(args.test_results_dir)
+            test_results_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Test Results - Rank-1: {rank1*100:.2f}, Rank-5: {rank5*100:.2f}, mAP: {mAP*100:.2f}s")
+            with open(test_results_dir / "test_results.txt", "w") as f:
+                f.write(f"Test Results using {test_method[args.test_method]}:")
                 f.write(f" Rank-1: {rank1*100:.2f}")
                 f.write(f" Rank-5: {rank5*100:.2f}")
                 f.write(f" mAP: {mAP*100:.2f}\n")
                 f.write("\nConfig:\n")
                 for k, v in vars(args).items():
                     f.write(f"{k}: {v}\n")
+
+if __name__ == "__main__":
+    main()
 
 
         

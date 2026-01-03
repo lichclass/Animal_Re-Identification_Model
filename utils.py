@@ -28,8 +28,8 @@ from dataset import SeaTurtleDataset
 
 def prep_dataframe(args):
     # Data Loading
-    data_dir = Path(args.data_dir)
-    metadata = f'metadata_splits.csv' if args['segment'] == 'full' else f'metadata_splits_{args["segment"]}.csv'
+    data_dir = Path(args.dataset_dir)
+    metadata = f'metadata_splits.csv' if args.segment == 'full' else f'metadata_splits_{args.segment}.csv'
     df = pd.read_csv(data_dir / metadata)
     df['file_name'] = df['file_name'].apply(lambda x: str(data_dir / x))
 
@@ -51,6 +51,7 @@ def prep_dataframe(args):
     eval_id_to_idx = {identity: idx for idx, identity in enumerate(all_identities)}
     df['eval_label'] = df['identity'].map(eval_id_to_idx)
 
+    print(f"Dataframe prepared with {len(df)} images, {len(all_identities)} identities, and {len(unique_encounters)} encounters.")
     return df
 
 
