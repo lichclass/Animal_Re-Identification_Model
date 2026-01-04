@@ -837,8 +837,8 @@ def run():
         'segment': 'head', # Valid values are 'flipper', 'head', 'turtle', 'full'
 
         # Logging Config
-        'dataset_dir': '/content/turtle-data',
-        'results_path': '/content/results',
+        'dataset_dir': './data/turtle-data',
+        'results_path': './results_data/FINAL15_fedavg_closed_head',
         'max_points_eval': 2000,
         
         # Model Config
@@ -944,6 +944,22 @@ def run():
     )
 
     if not RUN_TEST_ONLY:
+        
+        # For Fault Tolerance: Load existing checkpoint if available
+        results_path = Path(args['results_path'])
+        checkpoint = {}
+        if results_path.exists():
+            print(f"Results directory {results_path} already exists. Existing files may be overwritten. Taking existing checkpoint")
+            MODEL_PATH = results_path / 'checkpoint_backbone.pth'
+            if MODEL_PATH.exists():
+                print(f"Loading existing model from {MODEL_PATH} to resume training...")
+                checkpoint = torch.load(MODEL_PATH)
+
+                server.global_backbone.load_state_dict(checkpoint['backbone'])
+                server.global_prototypes = checkpoint['prototypes']
+        else:
+            results_path.mkdir(parents=True, exist_ok=True)
+
         clients = [FederatedClient(client_id, client_dfs[client_id], args) for client_id in range(args['num_clients'])]
 
         dummy_optimizer = optim.AdamW(server.global_backbone.parameters(), lr=args['learning_rate'])
@@ -952,22 +968,22 @@ def run():
         warmup_scheduler = LinearLR(dummy_optimizer, start_factor=0.1, total_iters=warmup_rounds)
         scheduler = SequentialLR(dummy_optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_rounds])
 
-        best_rank1 = 0.
-        best_rank5 = 0.
-        best_mAP = 0.
-        best_round = 0
-        history = {
-            'val_rank1': [],
-            'val_rank5': [],
-            'val_mAP': [],
-        }
-        patience_counter = 0
+        if "scheduler" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler"])
+
+        history = checkpoint.get("history", {"val_rank1": [], "val_rank5": [], "val_mAP": []})
+        best_rank1 = checkpoint.get("best_rank1", 0.0)
+        best_rank5 = checkpoint.get("best_rank5", 0.0)
+        best_mAP = checkpoint.get("best_mAP", 0.0)
+        best_round = checkpoint.get("best_round", 0)
+        patience_counter = checkpoint.get("patience_counter", 0)
+        last_idx = checkpoint.get('round_idx', 0)
 
         global_weights = server.global_backbone.state_dict()
         global_prototypes = server.global_prototypes
 
-        round_idx = 0
-        for round_idx in range(1, args['federation_rounds'] + 1):
+        round_idx = last_idx
+        for round_idx in range(last_idx + 1, args['federation_rounds'] + 1):
             print(f"\n=== Federation Round {round_idx}/{args['federation_rounds']} ===")
             current_lr = scheduler.get_last_lr()[0]
 
@@ -990,6 +1006,23 @@ def run():
             del client_weights_list
             del client_protos_list
             torch.cuda.empty_cache()
+
+            # Save checkpoint
+            torch.save({
+                "round_idx": round_idx,
+                "backbone": server.global_backbone.state_dict(),
+                "prototypes": server.global_prototypes,
+
+                "history": history,
+                "best_rank1": best_rank1,
+                "best_rank5": best_rank5,
+                "best_mAP": best_mAP,
+                "best_round": best_round,
+                "patience_counter": patience_counter,
+
+                "scheduler": scheduler.state_dict(),
+                "args": args,
+            }, results_path / "checkpoint_backbone.pth")
 
             if round_idx % args['eval_every'] == 0:
                 val_r1, val_r5, val_mAP = server.evaluate(val_loader, set_name="Validation")
@@ -1016,9 +1049,10 @@ def run():
                         print(f"Early stopping triggered after {round_idx} rounds.")
                         break
                 print(f"Rank-1: {val_r1*100:.2f}%, Rank-5: {val_r5*100:.2f}%, mAP: {val_mAP*100:.2f}% at round {round_idx}")
-        
-        with open(Path(args['results_path']) / 'training_history.json', 'w') as f:
-            json.dump(history, f, indent=4)
+
+            with open(Path(args['results_path']) / 'training_history.json', 'w') as f:
+                json.dump(history, f, indent=4)
+                
         print(f"Training completed. Best Validation Rank-1: {best_rank1*100:.2f}%, Rank-5: {best_rank5*100:.2f}%, mAP: {best_mAP*100:.2f}% at round {best_round}.")
 
     # Evaluation on Test Set
