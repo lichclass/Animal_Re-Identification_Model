@@ -39,7 +39,7 @@ def main():
         build_sea_turtle_metadata(
             annotations=args.annotations,
             metadata=args.metadata,
-            dataset_path=args.data_dir
+            dataset_path=args.dataset_dir
         )
         return
 
