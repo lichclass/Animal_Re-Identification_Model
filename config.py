@@ -27,8 +27,8 @@ def get_config():
     parser.add_argument("--inspect-metadata", action="store_true")
    
     # Dataset parameters
-    parser.add_argument("--dataset-dir", type=str, default="data/turtle-data")
-    parser.add_argument("--annotations", type=str, default="data/turtle-data/annotations.json")
+    parser.add_argument("--dataset-dir", type=str, default="./data/turtle-data")
+    parser.add_argument("--annotations", type=str, default="./data/turtle-data/annotations.json")
     parser.add_argument("--metadata", type=str, default="data/metadata_splits.csv")
     parser.add_argument("--results-path", type=str, default="results")
     parser.add_argument("--split-mode", type=str, default="closed", help="closed, open") # closed, open
