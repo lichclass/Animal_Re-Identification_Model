@@ -2,6 +2,7 @@ import torch
 import torch.optim as optim
 import pandas as pd
 import numpy as np
+import os
 
 from pathlib import Path
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -18,11 +19,29 @@ from utils import (
     plot_tsne,
     set_seed,
     prep_dataframe,
+    build_sea_turtle_metadata,
+    download_dataset
 )
 
 def main():
     args = get_config()
     set_seed(args.seed)
+
+    if args.download_data:
+        download_dataset()
+        return
+
+    # Build metadata splits
+    if args.build_splits:
+        assert os.path.exists(args.annotations), f"Annotations not found: {args.annotations}"
+        assert os.path.exists(args.metadata), f"Metadata CSV not found: {args.metadata}"
+
+        build_sea_turtle_metadata(
+            annotations=args.annotations,
+            metadata=args.metadata,
+            dataset_path=args.data_dir
+        )
+        return
 
     # Run tests
     if args.run_test:
