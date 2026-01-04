@@ -58,11 +58,11 @@ def get_config():
 
     # Federation Configs
     parser.add_argument("--federated", action="store_true", help="Enable federated training")
-    parser.add_argument("--num-clients", type=int, default=3, help="Number of federated clients")
+    parser.add_argument("--num-clients", type=int, default=5, help="Number of federated clients")
     parser.add_argument("--federated-rounds", type=int, default=10, help="Number of federated training rounds")
     parser.add_argument("--lambda-proto", type=float, default=1.0, help="Weight for prototypical loss in federated training")
     parser.add_argument("--proto-momentum", type=float, default=0.9, help="Momentum for updating global prototypes in federated training")
-    parser.add_argument("--overlap-ratio", type=float, default=0.3, help="Overlap ratio of identities between clients in federated training")
+    parser.add_argument("--overlap-ratio", type=float, default=0.1, help="Overlap ratio of identities between clients in federated training")
     parser.add_argument("--eval-every", type=int, default=1, help="Evaluate every N federated/centralized rounds/epochs")
 
     # Dataloader Configs

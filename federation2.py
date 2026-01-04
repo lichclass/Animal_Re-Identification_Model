@@ -1,12 +1,12 @@
 import ast
 import math
 import random
+import pprint
+import json
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import torch.nn as nn
-import pprint
-import json
 
 from PIL import Image
 from pathlib import Path
@@ -16,11 +16,12 @@ from sklearn.metrics import average_precision_score
 from collections import Counter
 
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torchvision import transforms as T
 from torch.optim.lr_scheduler import CosineAnnealingLR, SequentialLR, LinearLR
-from torch.amp import autocast_mode
+from torch.amp import autocast_mode, grad_scaler
 from torch.utils.data import DataLoader, Dataset
 from torchvision.models import convnext_base, ConvNeXt_Base_Weights
 from torchvision.models import swin_b, Swin_B_Weights
@@ -243,32 +244,107 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
-def partition_train_data(train_df, num_clients, overlap_ratio=0.1, verbose=False):
+def partition_train_data(train_df, num_clients, overlap_ratio=0.1, max_client_ratio=0.4, seed=42, verbose=True):
+    """
+    Partitions data such that overlapping identities share NO duplicate images.
+    Each client gets a unique subset of photos for any shared identities.
+    """
     all_identities = sorted(train_df['identity'].unique().tolist())
-    random.shuffle(all_identities)
+    rng = np.random.RandomState(seed)
+    rng.shuffle(all_identities)
     
-    num_shared = int(len(all_identities) * overlap_ratio)
-    shared_ids = all_identities[:num_shared]
-    exclusive_ids = all_identities[num_shared:]
+    # 1. Identity Assignment (Same logic as before)
+    num_shared_all = int(len(all_identities) * overlap_ratio)
+    shared_all_ids = all_identities[:num_shared_all]
+    remaining_ids = all_identities[num_shared_all:]
     
-    if verbose:
-        print(f"Partitioning training data into {num_clients} clients with {overlap_ratio*100:.1f}% overlap...")
-        print(f"  Total identities: {len(all_identities)}")
-        print(f"  Shared identities (overlap): {num_shared}")
-        print(f"  Exclusive identities to partition: {len(exclusive_ids)}")
+    max_clients_limit = max(1, min(int(num_clients * max_client_ratio), num_clients - 1))
     
-    id_chunks = np.array_split(exclusive_ids, num_clients)
-    
-    client_dfs = []
+    client_id_map = {i: [] for i in range(num_clients)}
     for i in range(num_clients):
-        client_ids = list(id_chunks[i]) + shared_ids
-        client_df = train_df[train_df['identity'].isin(client_ids)].copy().reset_index(drop=True)
+        client_id_map[i].extend(shared_all_ids)
+        
+    for identity in remaining_ids:
+        n_sites = rng.randint(1, max_clients_limit + 1)
+        target_clients = rng.choice(range(num_clients), size=n_sites, replace=False)
+        for client_idx in target_clients:
+            client_id_map[client_idx].append(identity)
+
+    # 2. IMAGE-LEVEL DISTRIBUTION (New Logic)
+    client_dfs = []
+    
+    # Pre-split images for every identity to ensure zero duplication
+    # identity -> list of image indices
+    id_to_indices = {id: train_df[train_df['identity'] == id].index.tolist() for id in all_identities}
+    for id in id_to_indices:
+        rng.shuffle(id_to_indices[id]) # Shuffle photos for each turtle
+    
+    # Track which index in the image list we are at for each identity
+    id_cursor = {id: 0 for id in all_identities}
+
+    for i in range(num_clients):
+        selected_indices = []
+        client_ids = client_id_map[i]
+        
+        for identity in client_ids:
+            # Determine how many clients share this specific identity
+            total_shares = sum(1 for c_list in client_id_map.values() if identity in c_list)
+            
+            # Get all images for this identity
+            all_imgs = id_to_indices[identity]
+            
+            # Calculate this client's 'slice' of photos (e.g., 1/3 of the photos if shared by 3)
+            imgs_per_client = max(1, len(all_imgs) // total_shares)
+            
+            start = id_cursor[identity]
+            # If it's the last client for this ID, take all remaining photos to avoid wasting data
+            is_last_client_for_id = (sum(1 for j in range(i + 1) if identity in client_id_map[j]) == total_shares)
+            
+            if is_last_client_for_id:
+                end = len(all_imgs)
+            else:
+                end = min(start + imgs_per_client, len(all_imgs))
+            
+            selected_indices.extend(all_imgs[start:end])
+            id_cursor[identity] = end # Move cursor for the next client that shares this ID
+            
+        # Build the final DataFrame for this client
+        client_df = train_df.loc[selected_indices].copy().reset_index(drop=True)
+        client_df['is_shared_all'] = client_df['identity'].isin(shared_all_ids)
         
         if verbose:
-            print(f"  Client {i}: {len(client_df)} images, {len(client_ids)} identities")
+            print(f"Client {i}: {len(client_df)} unique images | IDs: {len(client_ids)}")
+            
         client_dfs.append(client_df)
-    print("Partitioning complete.")
+        
+    print(f"Partitioning complete. Images distributed across sites without duplication.\n")
     return client_dfs
+
+
+def analyze_data_distribution(client_dfs, all_identities):
+    """Analyze how identities are distributed across clients"""
+    identity_client_count = {identity: 0 for identity in all_identities}
+    
+    for client_df in client_dfs:
+        for identity in client_df['identity'].unique():
+            identity_client_count[identity] += 1
+    
+    # Count distribution
+    distribution = Counter(identity_client_count.values())
+    
+    print("\n=== Identity Distribution Analysis ===")
+    print(f"Total unique identities: {len(all_identities)}")
+    for n_clients in sorted(distribution.keys()):
+        count = distribution[n_clients]
+        pct = 100 * count / len(all_identities)
+        print(f"  Found in {n_clients} client(s): {count} identities ({pct:.1f}%)")
+    
+    # Calculate heterogeneity metric
+    avg_clients_per_id = np.mean(list(identity_client_count.values()))
+    print(f"\nAverage clients per identity: {avg_clients_per_id:.2f}")
+    print("=" * 40 + "\n")
+    
+    return identity_client_count
 
 
 #==================== backbone.py ====================
@@ -511,7 +587,8 @@ class FederatedClient:
             batch_size=self.args['batch_size'], 
             shuffle=True, 
             num_workers=self.args['num_workers'], 
-            pin_memory=self.args['pin_memory']
+            pin_memory=self.args['pin_memory'],
+            persistent_workers=self.args['persistent_workers']
         )
 
     def train(self, global_backbone_state, global_prototypes, current_lr):
@@ -520,6 +597,15 @@ class FederatedClient:
         
         criterion = nn.CrossEntropyLoss()
         loader = self.get_loader()
+
+        scaler = grad_scaler.GradScaler()
+
+        if global_prototypes:
+            gpu_prototypes = {
+                k: v.to(self.device) for k, v in global_prototypes.items()
+            }
+        else:
+            gpu_prototypes = {}
         
         optimizer = optim.AdamW(
             self.model.parameters(), 
@@ -546,14 +632,14 @@ class FederatedClient:
                     
                     # Federated Prototype Loss
                     loss_proto = torch.tensor(0.0, device=self.device)
-                    if global_prototypes:
+                    if gpu_prototypes:
                         valid_terms = []
                         for i, local_idx in enumerate(train_labels):
                             # Map local index to global identity string
                             identity_str = self.inv_local_id_map[local_idx.item()]
                             
-                            if identity_str in global_prototypes:
-                                g_proto = global_prototypes[identity_str].to(self.device)
+                            if identity_str in gpu_prototypes:
+                                g_proto = gpu_prototypes[identity_str]
                                 # MSE between normalized local embedding and global prototype
                                 valid_terms.append(F.mse_loss(emb[i], g_proto))
                         
@@ -564,8 +650,9 @@ class FederatedClient:
                     total_loss = loss_cls + loss_proto
                 
                 optimizer.zero_grad()
-                total_loss.backward()
-                optimizer.step()
+                scaler.scale(total_loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
                 
                 epoch_loss += total_loss.item()
                 epoch_cls_loss += loss_cls.item()
@@ -582,6 +669,10 @@ class FederatedClient:
             avg_proto = epoch_proto_loss / len(loader)
             print(f'  [Client {self.client_id}] Epoch {epoch+1}: Loss={avg_loss:.4f} (Cls={avg_cls:.4f}, Proto={avg_proto:.4f})')
         
+        # Clear GPU prototypes to free memory
+        del gpu_prototypes
+        torch.cuda.empty_cache()
+
         new_prototypes = self._compute_local_prototypes(loader)
         
         # Return backbone weights only
@@ -598,24 +689,30 @@ class FederatedClient:
             
             # Get Raw Embeddings, no normalization
             raw_emb = self.model.backbone.forward_raw(images)
+
+            train_labels = train_labels.cpu()
             
             for i in range(raw_emb.size(0)):
                 local_idx = train_labels[i].item()
                 identity_str = self.inv_local_id_map[local_idx]
+
+                emb_i = raw_emb[i].detach().cpu()
                 
                 if identity_str not in prototype_sums:
-                    prototype_sums[identity_str] = raw_emb[i].detach().cpu()
+                    prototype_sums[identity_str] = emb_i.clone()
                     prototype_counts[identity_str] = 1
                 else:
-                    prototype_sums[identity_str] += raw_emb[i].detach().cpu()
+                    prototype_sums[identity_str] += emb_i
                     prototype_counts[identity_str] += 1
         
-        prototypes = {}
-        for identity_str in prototype_sums:
-            mean_vec = prototype_sums[identity_str] / prototype_counts[identity_str]
-            prototypes[identity_str] = F.normalize(mean_vec, p=2, dim=0)
+        prototypes_with_counts = {}
+        for identity_str, vec_sum in prototype_sums.items():
+            cnt = prototype_counts[identity_str]
+            mean_vec = vec_sum / cnt
+            proto = F.normalize(mean_vec, p=2, dim=0)
+            prototypes_with_counts[identity_str] = (proto, cnt)
         
-        return prototypes
+        return prototypes_with_counts   
     
 
 class FederatedServer:
@@ -659,39 +756,54 @@ class FederatedServer:
         return avg_weights
 
     def aggregate_prototypes(self, client_protos_list):
-        print("[Server] Aggregating Prototypes...")
-        
+        print("[Server] Aggregating Prototypes (weighted by sample counts)...")
+
         round_sums = {}
         round_counts = {}
-        
+
         for c_protos in client_protos_list:
-            for identity_str, vec in c_protos.items():
+            for identity_str, (proto_vec, n) in c_protos.items():
+
+                n = int(n)
+                if n <= 0:
+                    continue
+
+                vec = proto_vec.float()
+
                 if identity_str not in round_sums:
-                    round_sums[identity_str] = vec
-                    round_counts[identity_str] = 1
+                    round_sums[identity_str] = vec * n
+                    round_counts[identity_str] = n
                 else:
-                    round_sums[identity_str] += vec
-                    round_counts[identity_str] += 1
-        
-        momentum = self.args['proto_momentum']
+                    round_sums[identity_str] += vec * n
+                    round_counts[identity_str] += n
+
+        momentum = self.args["proto_momentum"]
         updated_count = 0
         new_count = 0
-        
+
+        # Update global prototypes with momentum
         for identity_str, vec_sum in round_sums.items():
-            current_avg = vec_sum / round_counts[identity_str]
-            current_avg = F.normalize(current_avg, p=2, dim=0)
+
+            total_n = round_counts[identity_str]
+            if total_n <= 0:
+                continue
             
+            # Weighted mean of prototypes from this round
+            current_avg = vec_sum / total_n
+            current_avg = F.normalize(current_avg, p=2, dim=0)
+
             if identity_str in self.global_prototypes:
-                old_proto = self.global_prototypes[identity_str]
+                old_proto = self.global_prototypes[identity_str].float()
                 new_proto = (old_proto * momentum) + (current_avg * (1 - momentum))
                 self.global_prototypes[identity_str] = F.normalize(new_proto, p=2, dim=0)
                 updated_count += 1
             else:
                 self.global_prototypes[identity_str] = current_avg
                 new_count += 1
-        
+
         print(f"[Server] Updated: {updated_count} | New: {new_count} | Total: {len(self.global_prototypes)}")
         return self.global_prototypes
+
 
     def evaluate(self, loader, set_name="Val"):
         print(f"[Server] Evaluating on {set_name} Set...")
@@ -711,6 +823,8 @@ class FederatedServer:
 #==================== main.py ====================
 def run():
     torch.set_float32_matmul_precision('high')
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    torch.backends.cudnn.benchmark = True
 
     RUN_TEST_ONLY = False
 
@@ -750,17 +864,19 @@ def run():
 
         # DataLoader Configs
         'batch_size': 128,
-        'num_workers': 8,
+        'num_workers': 12,
         'pin_memory': True,
+        'persistent_workers': True,
         
         # Federation Configs
-        'num_clients': 3,
+        'num_clients': 5,
         'federation_rounds': 50,
         'local_epochs': 5,
         'lambda_proto': 0.,
         'proto_momentum': 0.9,
-        'overlap_ratio': 0.3,
+        'overlap_ratio': 0.1,
         'eval_every': 1, 
+        'max_client_ratio': 0.4,
     }
 
     print("Data: Configs")
@@ -796,15 +912,36 @@ def run():
 
     # Data Partitioning between clients
     train_df_full = df[df[f'split_{args["split_mode"]}'] == 'train'].reset_index(drop=True)
-    client_dfs = partition_train_data(train_df_full, args['num_clients'], args['overlap_ratio'])
+    client_dfs = partition_train_data(
+        train_df=train_df_full, 
+        num_clients=args['num_clients'], 
+        overlap_ratio=args['overlap_ratio'], 
+        max_client_ratio=args['max_client_ratio'], 
+        seed=args['seed']
+    )
+    analyze_data_distribution(client_dfs, all_identities)
 
     # Server setup
     server = FederatedServer(args)
 
     # Set and Loaders for Evaluation
     _, val_set, test_set = build_dataset_splits(df, args['split_mode'])
-    val_loader = DataLoader(val_set, batch_size=args['batch_size'], shuffle=False, num_workers=args['num_workers'], pin_memory=args['pin_memory'])
-    test_loader = DataLoader(test_set, batch_size=args['batch_size'], shuffle=False, num_workers=args['num_workers'], pin_memory=args['pin_memory'])
+    val_loader = DataLoader(
+        val_set,
+        batch_size=args['batch_size'],
+        shuffle=False,
+        num_workers=args['num_workers'],
+        pin_memory=args['pin_memory'],
+        persistent_workers=args['persistent_workers']
+    )
+    test_loader = DataLoader(
+        test_set,
+        batch_size=args['batch_size'],
+        shuffle=False,
+        num_workers=args['num_workers'],
+        pin_memory=args['pin_memory'],
+        persistent_workers=args['persistent_workers']
+    )
 
     if not RUN_TEST_ONLY:
         clients = [FederatedClient(client_id, client_dfs[client_id], args) for client_id in range(args['num_clients'])]
@@ -848,6 +985,11 @@ def run():
             print("Aggregating updates on server...")
             global_weights = server.aggregate_weights(client_weights_list)
             global_prototypes = server.aggregate_prototypes(client_protos_list)
+
+            # Adding this because i can't use A100 Anymore and have to switch to a smaller GPU
+            del client_weights_list
+            del client_protos_list
+            torch.cuda.empty_cache()
 
             if round_idx % args['eval_every'] == 0:
                 val_r1, val_r5, val_mAP = server.evaluate(val_loader, set_name="Validation")

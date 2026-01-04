@@ -258,32 +258,59 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
-def partition_train_data(train_df, num_clients, overlap_ratio=0.1, verbose=False):
+def partition_train_data(train_df, num_clients, overlap_ratio=0.1, max_client_ratio=0.4, seed=42, verbose=True):
     all_identities = sorted(train_df['identity'].unique().tolist())
-    random.shuffle(all_identities)
+    rng = np.random.RandomState(seed)
+    rng.shuffle(all_identities)
     
-    num_shared = int(len(all_identities) * overlap_ratio)
-    shared_ids = all_identities[:num_shared]
-    exclusive_ids = all_identities[num_shared:]
+    num_shared_all = int(len(all_identities) * overlap_ratio)
+    shared_all_ids = all_identities[:num_shared_all]
+    remaining_ids = all_identities[num_shared_all:]
     
-    if verbose:
-        print(f"Partitioning training data into {num_clients} clients with {overlap_ratio*100:.1f}% overlap...")
-        print(f"  Total identities: {len(all_identities)}")
-        print(f"  Shared identities (overlap): {num_shared}")
-        print(f"  Exclusive identities to partition: {len(exclusive_ids)}")
+    max_clients_limit = max(1, int(num_clients * max_client_ratio))
+    if max_clients_limit >= num_clients:
+        max_clients_limit = num_clients - 1
+
+    client_id_map = {i: [] for i in range(num_clients)}
     
-    id_chunks = np.array_split(exclusive_ids, num_clients)
-    
+    for i in range(num_clients):
+        client_id_map[i].extend(shared_all_ids)
+        
+    for identity in remaining_ids:
+        n_sites = rng.randint(1, max_clients_limit + 1)
+        
+        target_clients = rng.choice(range(num_clients), size=n_sites, replace=False)
+        
+        for client_idx in target_clients:
+            client_id_map[client_idx].append(identity)
+            
     client_dfs = []
     for i in range(num_clients):
-        client_ids = list(id_chunks[i]) + shared_ids
+        client_ids = client_id_map[i]
         client_df = train_df[train_df['identity'].isin(client_ids)].copy().reset_index(drop=True)
         
+        client_df['is_shared_all'] = client_df['identity'].isin(shared_all_ids)
+        
         if verbose:
-            print(f"  Client {i}: {len(client_df)} images, {len(client_ids)} identities")
+            excl_count = 0
+            limit_count = 0
+            for identity in client_ids:
+                if identity in shared_all_ids:
+                    continue
+                appearances = sum(1 for c_list in client_id_map.values() if identity in c_list)
+                if appearances == 1:
+                    excl_count += 1
+                else:
+                    limit_count += 1
+            
+            print(f"Client {i}: {len(client_df)} images | {len(shared_all_ids)} Global, "
+                  f"{limit_count} Limited (max {max_clients_limit} sites), {excl_count} Exclusive")
+            
         client_dfs.append(client_df)
-    print("Partitioning complete.")
+        
+    print(f"Partitioning complete. Max allowed sites per limited ID: {max_clients_limit}\n")
     return client_dfs
+
 
 def download_dataset():
     data_dir = "data"
