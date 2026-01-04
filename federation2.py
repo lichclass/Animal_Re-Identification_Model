@@ -838,7 +838,7 @@ def run():
 
         # Logging Config
         'dataset_dir': './data/turtle-data',
-        'results_path': './results_data/FINAL15_fedavg_closed_head',
+        'results_path': './results_data/FINAL17_fedproto_default_lambda',
         'max_points_eval': 2000,
         
         # Model Config
@@ -872,7 +872,7 @@ def run():
         'num_clients': 5,
         'federation_rounds': 50,
         'local_epochs': 5,
-        'lambda_proto': 0.0,
+        'lambda_proto': 5.0,
         'proto_momentum': 0.9,
         'overlap_ratio': 0.1,
         'eval_every': 1, 
