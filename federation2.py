@@ -838,7 +838,7 @@ def run():
 
         # Logging Config
         'dataset_dir': './data/turtle-data',
-        'results_path': './results_data/FINAL17_fedproto_default_lambda',
+        'results_path': './results_data/FINAL18_fedproto_lambda_2_0',
         'max_points_eval': 2000,
         
         # Model Config
