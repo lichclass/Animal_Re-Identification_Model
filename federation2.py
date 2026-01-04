@@ -872,7 +872,7 @@ def run():
         'num_clients': 5,
         'federation_rounds': 50,
         'local_epochs': 5,
-        'lambda_proto': 5.0,
+        'lambda_proto': 2.0,
         'proto_momentum': 0.9,
         'overlap_ratio': 0.1,
         'eval_every': 1, 
