@@ -872,7 +872,7 @@ def run():
         'num_clients': 5,
         'federation_rounds': 50,
         'local_epochs': 5,
-        'lambda_proto': 0.,
+        'lambda_proto': 0.0,
         'proto_momentum': 0.9,
         'overlap_ratio': 0.1,
         'eval_every': 1, 
@@ -1052,7 +1052,7 @@ def run():
 
             with open(Path(args['results_path']) / 'training_history.json', 'w') as f:
                 json.dump(history, f, indent=4)
-                
+
         print(f"Training completed. Best Validation Rank-1: {best_rank1*100:.2f}%, Rank-5: {best_rank5*100:.2f}%, mAP: {best_mAP*100:.2f}% at round {best_round}.")
 
     # Evaluation on Test Set
@@ -1089,4 +1089,5 @@ def run():
         lab = lab[:max_points]
     plot_tsne(emb, lab, title='t-SNE Visualization of Test Embeddings', save_path=Path(args['results_path']) / 'tsne_test_set.png')
 
-run()
+if __name__ == '__main__':
+    run()
