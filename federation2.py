@@ -942,14 +942,16 @@ def run(args, df, all_identities, val_loader, test_loader):
                 client_weights_list.append(c_weights)
                 client_sample_counts.append(c_sample_count)
                 client_protos_list.append(c_prototypes)
-            scheduler.step()
         
             print("Aggregating updates on server...")
             global_weights = server.aggregate_weights(client_weights_list, client_sample_counts)
             global_prototypes = server.aggregate_prototypes(client_protos_list)
 
+            dummy_optimizer.step()
+            scheduler.step()
+
             # Adding this because i can't use A100 Anymore and have to switch to a smaller GPU
-            del client_weights_list, client_protos_list
+            del client_weights_list, client_protos_list, c_weights, c_prototypes
             torch.cuda.empty_cache()
 
             # Save checkpoint
@@ -1117,12 +1119,6 @@ if __name__ == '__main__':
 
     # Validation and Test Loaders
     val_loader, test_loader = get_static_loaders(df, base_args)
-
-    # For sanity check
-    print("Sanity Check")
-    run(base_args, df, all_identities, val_loader, test_loader)
-
-    stop()
 
     experiments = [
 
