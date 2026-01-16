@@ -1120,7 +1120,7 @@ if __name__ == '__main__':
 
     # For sanity check
     print("Sanity Check")
-    run(df, base_args, all_identities, val_loader, test_loader)
+    run(base_args, df, all_identities, val_loader, test_loader)
 
     stop()
 
