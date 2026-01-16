@@ -20,7 +20,9 @@ from utils import (
     set_seed,
     prep_dataframe,
     build_sea_turtle_metadata,
-    download_dataset
+    download_dataset,
+    inspect_annotations,
+    inspect_metadata,
 )
 
 def main():
@@ -30,6 +32,9 @@ def main():
     if args.download_data:
         download_dataset()
         return
+    
+    if args.inspect_annotations: inspect_annotations(); return
+    if args.inspect_metadata: inspect_metadata(); return    
 
     # Build metadata splits
     if args.build_splits:

@@ -7,6 +7,8 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import gc
+import traceback
 
 from PIL import Image
 from pathlib import Path
@@ -73,6 +75,31 @@ class SeaTurtleDataset(Dataset):
     
 
 #==================== utils.py ====================
+def get_static_loaders(df, args):
+    print("Building static Validation and Test loaders...")
+    _, val_set, test_set = build_dataset_splits(df, args['split_mode'])
+    eval_workers = min(4, args['num_workers'])
+
+    val_loader = DataLoader(
+        val_set,
+        batch_size=args['batch_size'],
+        shuffle=False,
+        num_workers=eval_workers, 
+        pin_memory=args['pin_memory'],
+        persistent_workers=True 
+    )
+
+    test_loader = DataLoader(
+        test_set,
+        batch_size=args['batch_size'],
+        shuffle=False,
+        num_workers=eval_workers,
+        pin_memory=args['pin_memory'],
+        persistent_workers=True
+    )
+    return val_loader, test_loader
+
+
 @torch.no_grad()
 def extract_embeddings(model, loader, device, set_name=None, max_points=None):
     model.eval()
@@ -554,6 +581,9 @@ class FederatedClient:
         self.inv_local_id_map = {idx: identity for identity, idx in self.local_id_map.items()}
         self.train_df['train_label'] = self.train_df['identity'].map(self.local_id_map)
 
+        self.proto_sums = torch.zeros(self.num_local_classes, args['embedding_dim'], device=self.device)
+        self.proto_counts = torch.zeros(self.num_local_classes, device=self.device)
+
         head_kwargs = {}
         if args['head'] == 'arcface':
             head_kwargs = {'s': args['s'], 'm': args['m']}
@@ -598,19 +628,22 @@ class FederatedClient:
         criterion = nn.CrossEntropyLoss()
         loader = self.get_loader()
         scaler = grad_scaler.GradScaler()
-
-        if global_prototypes:
-            gpu_prototypes = {
-                k: v.to(self.device) for k, v in global_prototypes.items()
-            }
-        else:
-            gpu_prototypes = {}
         
         optimizer = optim.AdamW(
             self.model.parameters(), 
             lr=current_lr, 
             weight_decay=self.args['weight_decay']
         )
+
+        target_proto_tensor = torch.zeros(self.num_local_classes, self.args['embedding_dim'], device=self.device)
+        valid_proto_mask = torch.zeros(self.num_local_classes, device=self.device, dtype=torch.bool)
+
+        if global_prototypes:
+            for local_idx in range(self.num_local_classes):
+                identity_str = self.inv_local_id_map[local_idx]
+                if identity_str in global_prototypes:
+                    target_proto_tensor[local_idx] = global_prototypes[identity_str].to(self.device)
+                    valid_proto_mask[local_idx] = True
         
         for epoch in range(self.args['local_epochs']):
             epoch_loss = 0.0
@@ -631,24 +664,22 @@ class FederatedClient:
                     
                     # Federated Prototype Loss
                     loss_proto = torch.tensor(0.0, device=self.device)
-                    if gpu_prototypes:
-                        valid_terms = []
-                        for i, local_idx in enumerate(train_labels):
-                            # Map local index to global identity string
-                            identity_str = self.inv_local_id_map[local_idx.item()]
-                            
-                            if identity_str in gpu_prototypes:
-                                g_proto = gpu_prototypes[identity_str]
-                                # MSE between normalized local embedding and global prototype
-                                valid_terms.append(F.mse_loss(emb[i], g_proto))
+                    if global_prototypes:
+                        # 1. Get masks for current batch
+                        batch_has_proto = valid_proto_mask[train_labels] # (Batch_Size,)
                         
-                        if valid_terms:
-                            loss_proto = torch.stack(valid_terms).mean() * self.args['lambda_proto']
+                        if batch_has_proto.any():
+                            # 2. Select embeddings and targets where prototype exists
+                            active_embs = emb[batch_has_proto]
+                            active_targets = target_proto_tensor[train_labels][batch_has_proto]
+                            
+                            # 3. Compute MSE in one go
+                            loss_proto = F.mse_loss(active_embs, active_targets) * self.args['lambda_proto']
                     
                     # Combine Losses
                     total_loss = loss_cls + loss_proto
                 
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True) # Slightly faster than zero_grad()
                 scaler.scale(total_loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
@@ -669,51 +700,54 @@ class FederatedClient:
             print(f'  [Client {self.client_id}] Epoch {epoch+1}: Loss={avg_loss:.4f} (Cls={avg_cls:.4f}, Proto={avg_proto:.4f})')
         
         # Clear GPU prototypes to free memory
-        del gpu_prototypes
+        del target_proto_tensor, valid_proto_mask
         torch.cuda.empty_cache()
 
         new_prototypes = self._compute_local_prototypes(loader)
         
         # Return backbone weights only
-        return self.model.backbone.state_dict(), new_prototypes
+        return self.model.backbone.state_dict(), len(loader.dataset), new_prototypes
 
     @torch.no_grad()
     def _compute_local_prototypes(self, loader):
         self.model.eval()
-        prototype_sums = {}
-        prototype_counts = {}
+        
+        # Reset buffers
+        self.proto_sums.zero_()
+        self.proto_counts.zero_()
         
         for images, train_labels, _, _ in loader:
-            images = images.to(self.device)
+            images = images.to(self.device, non_blocking=True)
+            train_labels = train_labels.to(self.device, non_blocking=True)
             
-            # Get Raw Embeddings, no normalization
+            # Forward raw
             raw_emb = self.model.backbone.forward_raw(images)
-
-            train_labels = train_labels.cpu()
             
-            for i in range(raw_emb.size(0)):
-                local_idx = train_labels[i].item()
-                identity_str = self.inv_local_id_map[local_idx]
-
-                emb_i = raw_emb[i].detach().cpu()
-                
-                if identity_str not in prototype_sums:
-                    prototype_sums[identity_str] = emb_i.clone()
-                    prototype_counts[identity_str] = 1
-                else:
-                    prototype_sums[identity_str] += emb_i
-                    prototype_counts[identity_str] += 1
-        
+            # [OPTIMIZATION] Vectorized Scatter Add
+            # Add raw_emb into proto_sums at indices specified by train_labels
+            self.proto_sums.index_add_(0, train_labels, raw_emb)
+            
+            # Count occurrences
+            ones = torch.ones_like(train_labels, dtype=torch.float)
+            self.proto_counts.index_add_(0, train_labels, ones)
+            
+        # Convert back to dictionary for the server
         prototypes_with_counts = {}
-        for identity_str, vec_sum in prototype_sums.items():
-            cnt = prototype_counts[identity_str]
-            mean_vec = vec_sum / cnt
-            proto = F.normalize(mean_vec, p=2, dim=0)
-            prototypes_with_counts[identity_str] = (proto, cnt)
         
-        return prototypes_with_counts   
+        # Move to CPU only once at the end
+        cpu_sums = self.proto_sums.cpu()
+        cpu_counts = self.proto_counts.cpu()
+        
+        for idx in range(self.num_local_classes):
+            cnt = cpu_counts[idx].item()
+            if cnt > 0:
+                mean_vec = cpu_sums[idx] / cnt
+                proto = F.normalize(mean_vec, p=2, dim=0)
+                identity_str = self.inv_local_id_map[idx]
+                prototypes_with_counts[identity_str] = (proto, cnt)
+                
+        return prototypes_with_counts
     
-
 class FederatedServer:
     def __init__(self, args):
         self.args = args
@@ -742,14 +776,18 @@ class FederatedServer:
         
         return EvalWrapper(backbone)
 
-    def aggregate_weights(self, client_weights_list):
+    def aggregate_weights(self, client_weights_list, client_sample_counts):
         print("[Server] Aggregating Backbone Weights...")
+
+        total_samples = sum(client_sample_counts)
         avg_weights = {}
-        num_clients = len(client_weights_list)
         
         ref_keys = client_weights_list[0].keys()
         for key in ref_keys:
-            avg_weights[key] = sum(cw[key] for cw in client_weights_list) / num_clients
+            avg_weights[key] = sum(
+                client_weights_list[k][key] * (client_sample_counts[k] / total_samples)
+                for k in range(len(client_weights_list))
+            )
         
         self.global_backbone.load_state_dict(avg_weights)
         return avg_weights
@@ -820,63 +858,12 @@ class FederatedServer:
     
 
 #==================== main.py ====================
-def run():
+def run(args, df, all_identities, val_loader, test_loader):
     torch.set_float32_matmul_precision('high')
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
     torch.backends.cudnn.benchmark = True
 
     RUN_TEST_ONLY = False
-
-    args = {
-        # Global Config
-        'seed': 42,
-
-        # Data Config
-        'split_mode': 'closed', # Valid values are 'closed' & 'open'
-        'segment': 'head', # Valid values are 'flipper', 'head', 'turtle', 'full'
-
-        # Logging Config
-        'dataset_dir': './data/turtle-data',
-        'results_path': './results_data/FINAL18_fedproto_lambda_2_0',
-        'max_points_eval': 2000,
-        
-        # Model Config
-        'backbone': 'convnext',
-        'head': 'adaface',
-        'embedding_dim': 512,
-        'dropout': 0.2,
-        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        
-        # For ArcFace / AdaFace Head
-        'm': 0.35,
-        's': 64.0,
-
-        # AdaFace specific
-        't_alpha': 0.01,
-        'h': 0.2,
-        
-        # Training Configs
-        'learning_rate': 1e-4,
-        'early_stopping_patience': 5,
-        'weight_decay': 1e-4,
-        'warmup_rounds': 3,
-
-        # DataLoader Configs
-        'batch_size': 128,
-        'num_workers': 12,
-        'pin_memory': True,
-        'persistent_workers': True,
-        
-        # Federation Configs
-        'num_clients': 5,
-        'federation_rounds': 50,
-        'local_epochs': 5,
-        'lambda_proto': 1.0,
-        'proto_momentum': 0.9,
-        'overlap_ratio': 0.1,
-        'eval_every': 1, 
-        'max_client_ratio': 0.4,
-    }
 
     print("Data: Configs")
     print("Segment: ", args['segment'])
@@ -884,30 +871,6 @@ def run():
     print("Federation: Clients =", args['num_clients'], ", Rounds =", args['federation_rounds'])
 
     set_seed(args['seed'])
-
-    # Data Loading
-    data_dir = Path(args['dataset_dir'])
-    metadata = f'metadata_splits.csv' if args['segment'] == 'full' else f'metadata_splits_{args["segment"]}.csv'
-    df = pd.read_csv(data_dir / metadata)
-    df['file_name'] = df['file_name'].apply(lambda x: str(data_dir / x))
-
-    # Required Columns only
-    required_cols = ['file_name', 'identity', 'date', f'split_{args["split_mode"]}']
-    if args['segment'] != 'full' and 'bounding_box' in df.columns:
-        required_cols.append('bounding_box')
-    df = df[required_cols]
-
-    # Add Encounter Labels
-    df['encounter'] = df['identity'].astype(str) + '_' + df['date'].astype(str)
-    unique_encounters = df['encounter'].unique().tolist()
-    encounter_id_to_idx = {encounter: idx for idx, encounter in enumerate(unique_encounters)}
-    idx_to_encounter_id = {idx: encounter for encounter, idx in encounter_id_to_idx.items()}
-    df['encounter_label'] = df['encounter'].map(encounter_id_to_idx)
-
-    # Global Identity Mapping (For Evaluation)
-    all_identities = sorted(df['identity'].unique().tolist())
-    eval_id_to_idx = {identity: idx for idx, identity in enumerate(all_identities)}
-    df['eval_label'] = df['identity'].map(eval_id_to_idx)
 
     # Data Partitioning between clients
     train_df_full = df[df[f'split_{args["split_mode"]}'] == 'train'].reset_index(drop=True)
@@ -923,29 +886,11 @@ def run():
     # Server setup
     server = FederatedServer(args)
 
-    # Set and Loaders for Evaluation
-    _, val_set, test_set = build_dataset_splits(df, args['split_mode'])
-    val_loader = DataLoader(
-        val_set,
-        batch_size=args['batch_size'],
-        shuffle=False,
-        num_workers=args['num_workers'],
-        pin_memory=args['pin_memory'],
-        persistent_workers=args['persistent_workers']
-    )
-    test_loader = DataLoader(
-        test_set,
-        batch_size=args['batch_size'],
-        shuffle=False,
-        num_workers=args['num_workers'],
-        pin_memory=args['pin_memory'],
-        persistent_workers=args['persistent_workers']
-    )
-
+    results_path = Path(args['results_path'])
+    results_path.mkdir(parents=True, exist_ok=True)
     if not RUN_TEST_ONLY:
         
         # For Fault Tolerance: Load existing checkpoint if available
-        results_path = Path(args['results_path'])
         checkpoint = {}
         if results_path.exists():
             print(f"Results directory {results_path} already exists. Existing files may be overwritten. Taking existing checkpoint")
@@ -987,23 +932,24 @@ def run():
             current_lr = scheduler.get_last_lr()[0]
 
             client_weights_list = []
+            client_sample_counts = []
             client_protos_list = []
 
             for client in clients:
                 print(f"Training Client {client.client_id}...")
-                c_weights, c_prototypes = client.train(global_weights, global_prototypes, current_lr)
+                c_weights, c_sample_count, c_prototypes = client.train(global_weights, global_prototypes, current_lr)
 
                 client_weights_list.append(c_weights)
+                client_sample_counts.append(c_sample_count)
                 client_protos_list.append(c_prototypes)
             scheduler.step()
         
             print("Aggregating updates on server...")
-            global_weights = server.aggregate_weights(client_weights_list)
+            global_weights = server.aggregate_weights(client_weights_list, client_sample_counts)
             global_prototypes = server.aggregate_prototypes(client_protos_list)
 
             # Adding this because i can't use A100 Anymore and have to switch to a smaller GPU
-            del client_weights_list
-            del client_protos_list
+            del client_weights_list, client_protos_list
             torch.cuda.empty_cache()
 
             # Save checkpoint
@@ -1011,14 +957,12 @@ def run():
                 "round_idx": round_idx,
                 "backbone": server.global_backbone.state_dict(),
                 "prototypes": server.global_prototypes,
-
                 "history": history,
                 "best_rank1": best_rank1,
                 "best_rank5": best_rank5,
                 "best_mAP": best_mAP,
                 "best_round": best_round,
                 "patience_counter": patience_counter,
-
                 "scheduler": scheduler.state_dict(),
                 "args": args,
             }, results_path / "checkpoint_backbone.pth")
@@ -1037,7 +981,7 @@ def run():
                     torch.save({
                         'backbone': server.global_backbone.state_dict(), 
                         'prototypes': server.global_prototypes,
-                    }, Path(args['results_path']) / 'best_backbone.pth'
+                    }, results_path / 'best_backbone.pth'
                     )
                     print(f"✅ New best model saved at round {best_round}:")
                     print(f"   Rank-1: {best_rank1*100:.2f}%, Rank-5: {best_rank5*100:.2f}%, mAP: {best_mAP*100:.2f}%")
@@ -1049,13 +993,13 @@ def run():
                         break
                 print(f"Rank-1: {val_r1*100:.2f}%, Rank-5: {val_r5*100:.2f}%, mAP: {val_mAP*100:.2f}% at round {round_idx}")
 
-            with open(Path(args['results_path']) / 'training_history.json', 'w') as f:
+            with open(results_path / 'training_history.json', 'w') as f:
                 json.dump(history, f, indent=4)
 
         print(f"Training completed. Best Validation Rank-1: {best_rank1*100:.2f}%, Rank-5: {best_rank5*100:.2f}%, mAP: {best_mAP*100:.2f}% at round {best_round}.")
 
     # Evaluation on Test Set
-    MODEL_PATH = Path(args['results_path']) / 'best_backbone.pth'
+    MODEL_PATH = results_path / 'best_backbone.pth'
     print(f"\nLoading best model from {MODEL_PATH} for final evaluation...")
     checkpoint = torch.load(MODEL_PATH)
     server.global_backbone.load_state_dict(checkpoint['backbone'])
@@ -1067,7 +1011,7 @@ def run():
     print(f"  Rank-1: {rank1*100:.2f}%")
     print(f"  Rank-5: {rank5*100:.2f}%")
     print(f"  mAP: {mAP*100:.2f}%")
-    with open(Path(args['results_path']) / 'test_results.txt', 'w') as f:
+    with open(results_path / 'test_results.txt', 'w') as f:
         f.write(f"Test Set Performance:\n")
         f.write(f"Federated Re-Identification Test Set Results:\n")
         f.write(f"Rank-1: {rank1*100:.2f}%\n")
@@ -1086,7 +1030,124 @@ def run():
     if emb.shape[0] > max_points:
         emb = emb[:max_points]
         lab = lab[:max_points]
-    plot_tsne(emb, lab, title='t-SNE Visualization of Test Embeddings', save_path=Path(args['results_path']) / 'tsne_test_set.png')
+    plot_tsne(emb, lab, title='t-SNE Visualization of Test Embeddings', save_path=results_path / 'tsne_test_set.png')
+
+    del server, clients, dummy_optimizer
+    torch.cuda.empty_cache()
+    gc.collect()
+
+def stop():
+    return
 
 if __name__ == '__main__':
-    run()
+    base_args = {
+        # Global Config
+        'seed': 42,
+
+        # Data Config
+        'split_mode': 'closed', # Valid values are 'closed' & 'open'
+        'segment': 'head', # Valid values are 'flipper', 'head', 'turtle', 'full'
+
+        # Logging Config
+        'dataset_dir': './data/turtle-data',
+        'results_path': "./results_data/federated_reid",
+        'max_points_eval': 2000,
+        
+        # Model Config
+        'backbone': 'convnext',
+        'head': 'adaface',
+        'embedding_dim': 512,
+        'dropout': 0.2,
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        
+        # For ArcFace / AdaFace Head
+        'm': 0.35,
+        's': 64.0,
+
+        # AdaFace specific
+        't_alpha': 0.01,
+        'h': 0.2,
+        
+        # Training Configs
+        'learning_rate': 1e-4,
+        'early_stopping_patience': 5,
+        'weight_decay': 1e-4,
+        'warmup_rounds': 3,
+
+        # DataLoader Configs
+        'batch_size': 128,
+        'num_workers': 12,
+        'pin_memory': True,
+        'persistent_workers': True,
+        
+        # Federation Configs
+        'num_clients': 5,
+        'federation_rounds': 50,
+        'local_epochs': 1,
+        'lambda_proto': 1.0,
+        'proto_momentum': 0.9,
+        'overlap_ratio': 0.1,
+        'eval_every': 1, 
+        'max_client_ratio': 0.4,
+    }
+
+    # Data Loading
+    data_dir = Path(base_args['dataset_dir'])
+    metadata = f'metadata_splits.csv' if base_args['segment'] == 'full' else f'metadata_splits_{base_args["segment"]}.csv'
+    df = pd.read_csv(data_dir / metadata)
+    df['file_name'] = df['file_name'].apply(lambda x: str(data_dir / x))
+
+    # Required Columns only
+    required_cols = ['file_name', 'identity', 'date', f'split_{base_args["split_mode"]}']
+    if base_args['segment'] != 'full' and 'bounding_box' in df.columns:
+        required_cols.append('bounding_box')
+    df = df[required_cols]
+
+    # Add Encounter Labels
+    df['encounter'] = df['identity'].astype(str) + '_' + df['date'].astype(str)
+    unique_encounters = df['encounter'].unique().tolist()
+    encounter_id_to_idx = {encounter: idx for idx, encounter in enumerate(unique_encounters)}
+    idx_to_encounter_id = {idx: encounter for encounter, idx in encounter_id_to_idx.items()}
+    df['encounter_label'] = df['encounter'].map(encounter_id_to_idx)
+
+    # Global Identity Mapping (For Evaluation)
+    all_identities = sorted(df['identity'].unique().tolist())
+    eval_id_to_idx = {identity: idx for idx, identity in enumerate(all_identities)}
+    df['eval_label'] = df['identity'].map(eval_id_to_idx)
+
+    # Validation and Test Loaders
+    val_loader, test_loader = get_static_loaders(df, base_args)
+
+    # For sanity check
+    print("Sanity Check")
+    run(df, base_args, all_identities, val_loader, test_loader)
+
+    stop()
+
+    experiments = [
+        {
+            'run_name': 'fedreid_convnext_adaface_overlap0.1',
+            'overlap_ratio': 0.1,
+        },
+        {
+            'run_name': 'fedreid_convnext_adaface_overlap0.3',
+            'overlap_ratio': 0.3,
+        }
+    ]
+
+    # Run Experiments
+    for exp_config in experiments:
+        current_args = base_args.copy()
+        current_args.update(exp_config)
+
+        current_args['results_path'] = str(Path(base_args['results_path']) / current_args['run_name'])
+
+        try:
+            run(current_args, df, all_identities, val_loader, test_loader)
+        except Exception as e:
+            print(f"!!! Error in run {current_args['run_name']}: {e}")
+            traceback.print_exc()
+        finally:
+            # Force cleanup between runs
+            torch.cuda.empty_cache()
+            gc.collect()
