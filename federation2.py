@@ -1050,7 +1050,7 @@ if __name__ == '__main__':
 
         # Logging Config
         'dataset_dir': './data/turtle-data',
-        'results_path': "./results_data/federated_reid",
+        'results_path': "./results_data/federated_reid_seed_42",
         'max_points_eval': 2000,
         
         # Model Config
