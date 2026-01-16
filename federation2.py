@@ -1070,7 +1070,7 @@ if __name__ == '__main__':
         
         # Training Configs
         'learning_rate': 1e-4,
-        'early_stopping_patience': 5,
+        'early_stopping_patience': 8,
         'weight_decay': 1e-4,
         'warmup_rounds': 3,
 
@@ -1125,14 +1125,22 @@ if __name__ == '__main__':
     stop()
 
     experiments = [
-        {
-            'run_name': 'fedreid_convnext_adaface_overlap0.1',
-            'overlap_ratio': 0.1,
-        },
-        {
-            'run_name': 'fedreid_convnext_adaface_overlap0.3',
-            'overlap_ratio': 0.3,
-        }
+
+        # Different lambda_proto value experiments
+        {'run_name': 'PROTO_00', 'lambda_proto': 0.0},
+        {'run_name': 'PROTO_25', 'lambda_proto': 0.25},
+        {'run_name': 'PROTO_50', 'lambda_proto': 0.5},
+        {'run_name': 'PROTO_100', 'lambda_proto': 1.0},
+        {'run_name': 'PROTO_200', 'lambda_proto': 2.0},
+        {'run_name': 'PROTO_400', 'lambda_proto': 4.0},
+
+        # Different momentum value experiments
+        {'run_name': 'MOM_00', 'proto_momentum': 0.0},
+        {'run_name': 'MOM_10', 'proto_momentum': 0.1},
+        {'run_name': 'MOM_30', 'proto_momentum': 0.3},
+        {'run_name': 'MOM_50', 'proto_momentum': 0.5},
+        {'run_name': 'MOM_70', 'proto_momentum': 0.7},
+        {'run_name': 'MOM_90', 'proto_momentum': 0.9},
     ]
 
     # Run Experiments
