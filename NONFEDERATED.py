@@ -141,29 +141,33 @@ class ArcFaceHead(nn.Module):
     def __init__(self, embedding_size, num_classes, s=64.0, m=0.5):
         super().__init__()
         self.num_classes = num_classes
-        self.kernel = nn.Parameter(torch.Tensor(embedding_size, num_classes))
-        self.kernel.data.uniform_(-1, 1).renorm_(2, 1, 1e-5).mul_(1e5)
-        self.m = m
-        self.s = s
-        self.eps = 1e-4
+        self.weight = nn.Parameter(torch.Tensor(num_classes, embedding_size))
+        nn.init.xavier_uniform_(self.weight)
+
+        # Precompute trig values
+        self.cos_m = math.cos(m)
+        self.sin_m = math.sin(m)
+        self.th = math.cos(math.pi - m)
+        self.mm = math.sin(math.pi - m) * m
 
     def forward(self, embeddings, norms, label):
-        kernel_norm = F.normalize(self.kernel, dim=0)
+        cosine = F.linear(F.normalize(embeddings), F.normalize(self.weight))
 
-        cosine = torch.mm(embeddings, kernel_norm)
-        cosine = cosine.clamp(-1 + self.eps, 1 - self.eps)
+        sine = torch.sqrt((1.0 - torch.pow(cosine, 2)).clamp(0, 1))
+        phi = cosine * self.cos_m - sine * self.sin_m
+
+        phi = torch.where(cosine > self.th, phi, cosine - self.mm)
 
         if label is None:
             return cosine * self.s
 
-        m_hot = torch.zeros(label.size()[0], cosine.size()[1], device=cosine.device)
-        m_hot.scatter_(1, label.view(-1, 1), self.m)
+        one_hot = torch.zeros_like(cosine)
+        one_hot.scatter_(1, label.view(-1, 1).long(), 1)
 
-        theta = torch.acos(cosine)
-        theta_m = torch.clip(theta + m_hot, min=self.eps, max=math.pi - self.eps)
-        cosine_m = torch.cos(theta_m)
+        output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
+        output *= self.s
 
-        return cosine_m * self.s
+        return output
 
 
 class AdaFaceHead(nn.Module):
@@ -436,7 +440,7 @@ def main(config):
 
     warmup_epochs = 5
     main_scheduler = CosineAnnealingLR(optimizer, T_max=config['epochs'] - warmup_epochs, eta_min=1e-6)
-    warmup_scheduler = LinearLR(optimizer, start_factor=0.01, total_iters=warmup_epochs)
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs])
     
     early_stop_counter = 0
@@ -462,6 +466,11 @@ def main(config):
                 logits = model(imgs, labels)
                 loss = criterion(logits, labels)
             scaler.scale(loss).backward()
+
+            if config['optimizer'] == 'sgd':
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+
             scaler.step(optimizer)
             scaler.update()
             running_loss += loss.item() * imgs.size(0)
@@ -548,7 +557,7 @@ if __name__ == "__main__":
             'head': 'arcface',
             'optimizer': 'sgd',
             'image_size': 224,  
-            'lr': 0.001,
+            'lr': 0.01,
             'w_decay': 5e-4,
             'seeds': [42],
         },
@@ -561,7 +570,7 @@ if __name__ == "__main__":
             'head': 'adaface',
             'optimizer': 'sgd',
             'image_size': 224,
-            'lr': 0.001,
+            'lr': 0.01,
             'w_decay': 5e-4,
             'seeds': [42],
         },
