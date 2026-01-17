@@ -386,6 +386,12 @@ def data_loader(config):
 # --- Main ---
 def main(config):
 
+    print("Configuration:")
+    print("-" * 60)
+    for key, value in config.items():
+        print(f"{key:15s}: {value}")
+    print("-" * 60 + "\n")
+
     # Create results directory
     results_path = Path(config['results_root']) / config['results_name']
     results_path.mkdir(parents=True, exist_ok=True)
@@ -531,12 +537,6 @@ if __name__ == "__main__":
         'patience': 8,
 
     }
-    
-    print("Configuration:")
-    print("-" * 60)
-    for key, value in config.items():
-        print(f"{key:15s}: {value}")
-    print("-" * 60 + "\n")
 
     experiments = [
         {
