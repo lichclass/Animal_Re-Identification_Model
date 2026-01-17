@@ -436,7 +436,7 @@ def main(config):
 
     warmup_epochs = 5
     main_scheduler = CosineAnnealingLR(optimizer, T_max=config['epochs'] - warmup_epochs, eta_min=1e-6)
-    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.01, total_iters=warmup_epochs)
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs])
     
     early_stop_counter = 0
@@ -541,13 +541,14 @@ if __name__ == "__main__":
     experiments = [
         {
             'results_name': 'EXPERIMENT_2',
-            'description': 'Swin-b + ArcFace on Time-Aware Closed Set - Head',    
+            'description': 'Swin-b + ArcFace on Time-Aware Closed Set - Head', 
             'body_part': 'head',
             'set': 'closed',
             'backbone': 'swin',
             'head': 'arcface',
             'optimizer': 'sgd',
-            'lr': 0.01,
+            'image_size': 224,  
+            'lr': 0.001,
             'w_decay': 5e-4,
             'seeds': [42],
         },
@@ -559,7 +560,8 @@ if __name__ == "__main__":
             'backbone': 'swin',
             'head': 'adaface',
             'optimizer': 'sgd',
-            'lr': 0.01,
+            'image_size': 224,
+            'lr': 0.001,
             'w_decay': 5e-4,
             'seeds': [42],
         },
