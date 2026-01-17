@@ -550,18 +550,6 @@ if __name__ == "__main__":
 
     experiments = [
         {
-            'results_name': 'EXPERIMENT_2_v2',
-            'description': 'Swin-b + ArcFace on Time-Aware Closed Set - Head', 
-            'body_part': 'head',
-            'set': 'closed',
-            'backbone': 'swin',
-            'head': 'arcface',
-            'optimizer': 'sgd',
-            'lr': 0.01,
-            'w_decay': 5e-4,
-            'seeds': [42],
-        },
-        {
             'results_name': 'EXPERIMENT_3_v2',
             'description': 'Swin-b + AdaFace on Time-Aware Closed Set - Head',    
             'body_part': 'head',
@@ -597,6 +585,42 @@ if __name__ == "__main__":
             'w_decay': 5e-4,
             'seeds': [42],
         },
+        {
+            'results_name': 'EXPERIMENT_7',
+            'description': 'ConvNeXt + AdaFace on Time-Aware Closed Set - Full',    
+            'body_part': None,
+            'set': 'closed',
+            'backbone': 'convnext',
+            'head': 'adaface',
+            'seeds': [42],
+        },
+        {
+            'results_name': 'EXPERIMENT_8',
+            'description': 'ConvNeXt + AdaFace on Time-Aware Closed Set - Turtle',    
+            'body_part': 'turtle',
+            'set': 'closed',
+            'backbone': 'convnext',
+            'head': 'adaface',
+            'seeds': [42],
+        },
+        {
+            'results_name': 'EXPERIMENT_9',
+            'description': 'ConvNeXt + AdaFace on Time-Aware Closed Set - Flipper',    
+            'body_part': 'flipper',
+            'set': 'closed',
+            'backbone': 'convnext',
+            'head': 'adaface',
+            'seeds': [42],
+        },
+        {
+            'results_name': 'EXPERIMENT_10',
+            'description': 'ConvNeXt + AdaFace on Time-Aware Open Set - Head',    
+            'body_part': 'head',
+            'set': 'open',
+            'backbone': 'convnext',
+            'head': 'adaface',
+            'seeds': [42],
+        }
     ]
 
     for exp in experiments:
