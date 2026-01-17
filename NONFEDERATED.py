@@ -415,6 +415,7 @@ def main(config):
             best_epoch = epoch
             torch.save(model.state_dict(), os.path.join(results_path, 'best_model.pth'))
             print(f"New best model saved at epoch {epoch} with Rank-1 Accuracy: {best_rank1:.2f}%")
+            early_stop_counter = 0
         else:
             early_stop_counter += 1
             if early_stop_counter >= config['patience']:
@@ -479,7 +480,7 @@ if __name__ == "__main__":
             'description': 'ConvNeXt + AdaFace on Time-Aware Closed Set Head',    
             'body_part': 'head',
             'set': 'closed',
-            'seeds': [42, 1, 2, 3, 4, 5, 6, 7],
+            'seeds': [1, 2, 3, 4, 5, 6, 7],
         },
     ]
 
