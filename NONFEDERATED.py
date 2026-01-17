@@ -550,32 +550,6 @@ if __name__ == "__main__":
 
     experiments = [
         {
-            'results_name': 'EXPERIMENT_2',
-            'description': 'Swin-b + ArcFace on Time-Aware Closed Set - Head', 
-            'body_part': 'head',
-            'set': 'closed',
-            'backbone': 'swin',
-            'head': 'arcface',
-            'optimizer': 'sgd',
-            'image_size': 224,  
-            'lr': 0.01,
-            'w_decay': 5e-4,
-            'seeds': [42],
-        },
-        {
-            'results_name': 'EXPERIMENT_3',
-            'description': 'Swin-b + AdaFace on Time-Aware Closed Set - Head',    
-            'body_part': 'head',
-            'set': 'closed',
-            'backbone': 'swin',
-            'head': 'adaface',
-            'optimizer': 'sgd',
-            'image_size': 224,
-            'lr': 0.01,
-            'w_decay': 5e-4,
-            'seeds': [42],
-        },
-        {
             'results_name': 'EXPERIMENT_4',
             'description': 'ConvNeXt + ArcFace on Time-Aware Closed Set - Head',    
             'body_part': 'head',
