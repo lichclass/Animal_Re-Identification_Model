@@ -140,7 +140,8 @@ class ConvNeXtBackbone(nn.Module):
 class ArcFaceHead(nn.Module):
     def __init__(self, embedding_size, num_classes, s=64.0, m=0.5):
         super().__init__()
-        self.num_classes = num_classes
+        self.s = s
+        self.m = m
         self.weight = nn.Parameter(torch.Tensor(num_classes, embedding_size))
         nn.init.xavier_uniform_(self.weight)
 
