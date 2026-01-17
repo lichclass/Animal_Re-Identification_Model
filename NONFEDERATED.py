@@ -450,7 +450,7 @@ if __name__ == "__main__":
         'description': '',
         'image_size': 384,
         'batch_size': 128,
-        'epochs': 30,
+        'epochs': 100,
 
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'seed': 42,
