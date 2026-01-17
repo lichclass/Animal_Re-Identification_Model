@@ -4,6 +4,7 @@ import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 import os
+import math
 
 # --- PyTorch/Torchvision Imports ---
 import torch
@@ -18,8 +19,14 @@ import torchvision.transforms as T
 from torchvision.models import (
     convnext_base,
     ConvNeXt_Base_Weights,
+
+    # Methods to compare
     swin_b,
     Swin_B_Weights,
+    resnet50,
+    ResNet50_Weights,
+    densenet121,
+    DenseNet121_Weights,
 )
 
 # --- Library Imports ---
@@ -36,6 +43,54 @@ os.environ['KAGGLE_KEY'] = "KGAT_9f227e36a409b0debe5ee7a27090bd72"
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 torch.set_float32_matmul_precision('high')
 torch.backends.cudnn.benchmark = True
+
+
+class DenseNet121Backbone(nn.Module):
+    def __init__(self, embedding_dim=512, dropout=0.2):
+        super().__init__()
+        weights = DenseNet121_Weights.IMAGENET1K_V1
+        model = densenet121(weights=weights)
+
+        # Remove original classifier
+        in_features = model.classifier.in_features
+        model.classifier = nn.Identity()
+        self.backbone = model
+
+        self.dropout = nn.Dropout(dropout)
+        self.proj = nn.Linear(in_features, embedding_dim)
+
+    def forward(self, x):
+        feat = self.backbone(x)
+        feat = self.dropout(feat)
+        emb = self.proj(feat)
+        # Return normalized embedding and norms (for AdaFace)
+        norms = torch.norm(emb, p=2, dim=1, keepdim=True)
+        emb = F.normalize(emb, dim=1)
+        return emb, norms.squeeze()
+
+class ResNet50Backbone(nn.Module):
+    def __init__(self, embedding_dim=512, dropout=0.2):
+        super().__init__()
+        weights = ResNet50_Weights.IMAGENET1K_V1
+        model = resnet50(weights=weights)
+
+        # Remove original classifier
+        in_features = model.fc.in_features
+        model.fc = nn.Identity()
+        self.backbone = model
+
+        self.dropout = nn.Dropout(dropout)
+        self.proj = nn.Linear(in_features, embedding_dim)
+
+    def forward(self, x):
+        feat = self.backbone(x)
+        feat = self.dropout(feat)
+        emb = self.proj(feat)
+        # Return normalized embedding and norms (for AdaFace)
+        norms = torch.norm(emb, p=2, dim=1, keepdim=True)
+        emb = F.normalize(emb, dim=1)
+        return emb, norms.squeeze()
+
 
 class SwinTransformerBackbone(nn.Module):
     def __init__(self, embedding_dim=512, dropout=0.2):
@@ -92,14 +147,14 @@ class ArcFaceHead(nn.Module):
         self.s = s
         self.eps = 1e-4
 
-    def forward(self, embeddings, label):
+    def forward(self, embeddings, norms, label):
         kernel_norm = F.normalize(self.kernel, dim=0)
 
         cosine = torch.mm(embeddings, kernel_norm)
         cosine = cosine.clamp(-1 + self.eps, 1 - self.eps)
 
         if label is None:
-            return cosine * self.s, embeddings
+            return cosine * self.s
 
         m_hot = torch.zeros(label.size()[0], cosine.size()[1], device=cosine.device)
         m_hot.scatter_(1, label.view(-1, 1), self.m)
@@ -108,7 +163,7 @@ class ArcFaceHead(nn.Module):
         theta_m = torch.clip(theta + m_hot, min=self.eps, max=math.pi - self.eps)
         cosine_m = torch.cos(theta_m)
 
-        return cosine_m * self.s, embeddings
+        return cosine_m * self.s
 
 
 class AdaFaceHead(nn.Module):
@@ -145,7 +200,7 @@ class AdaFaceHead(nn.Module):
         m_arc = m_arc * g_angular.unsqueeze(1)
         
         theta = cosine.acos()
-        theta_m = torch.clip(theta + m_arc, min=1e-3, max=np.pi-1e-3)
+        theta_m = torch.clip(theta + m_arc, min=1e-3, max=math.pi-1e-3)
         cosine_m = theta_m.cos()
 
         m_cos = torch.zeros_like(cosine)
@@ -354,6 +409,10 @@ def main(config):
         backbone = ConvNeXtBackbone(embedding_dim=config['embedding_dim'])
     elif config['backbone'] == 'swin':
         backbone = SwinTransformerBackbone(embedding_dim=config['embedding_dim'])
+    elif config['backbone'] == 'resnet50':
+        backbone = ResNet50Backbone(embedding_dim=config['embedding_dim'])
+    elif config['backbone'] == 'densenet121':
+        backbone = DenseNet121Backbone(embedding_dim=config['embedding_dim'])
 
     if config['head'] == 'adaface':
         head = AdaFaceHead(embedding_size=config['embedding_dim'], num_classes=num_classes)
@@ -361,9 +420,12 @@ def main(config):
         head = ArcFaceHead(embedding_size=config['embedding_dim'], num_classes=num_classes)
 
     model = ReIDModel(backbone=backbone, head=head).to(config['device'])
-    model.to(config['device'])
 
-    optimizer = optim.AdamW(model.parameters(), lr=config['lr'], weight_decay=config['w_decay'])
+    if config['optimizer'] == 'adamw':
+        optimizer = optim.AdamW(model.parameters(), lr=config['lr'], weight_decay=config['w_decay'])
+    elif config['optimizer'] == 'sgd':
+        optimizer = optim.SGD(model.parameters(), lr=config['lr'], momentum=0.9, weight_decay=config['w_decay'])
+    
     criterion = nn.CrossEntropyLoss()
 
     warmup_epochs = 5
@@ -414,7 +476,7 @@ def main(config):
             best_rank1 = val_rank1
             best_epoch = epoch
             torch.save(model.state_dict(), os.path.join(results_path, 'best_model.pth'))
-            print(f"New best model saved at epoch {epoch} with Rank-1 Accuracy: {best_rank1:.2f}%")
+            print(f"✅ New best model saved at epoch {epoch} with Rank-1 Accuracy: {best_rank1:.2f}%")
             early_stop_counter = 0
         else:
             early_stop_counter += 1
@@ -460,11 +522,13 @@ if __name__ == "__main__":
         'lr': 1e-4,
         'w_decay': 1e-4,
 
-        'backbone': 'convnext',  # 'convnext' or 'swin'
+        'backbone': 'convnext',  # 'convnext', 'swin', 'resnet50'
         'embedding_dim': 512,
         'head': 'adaface',      # 'adaface' or 'arcface'
 
-        'patience': 10,
+        'optimizer': 'adamw',    # 'adamw' or 'sgd'
+
+        'patience': 8,
 
     }
     
@@ -476,23 +540,75 @@ if __name__ == "__main__":
 
     experiments = [
         {
-            'results_name': 'EXPERIMENT_1',
-            'description': 'ConvNeXt + AdaFace on Time-Aware Closed Set Head',    
+            'results_name': 'EXPERIMENT_2',
+            'description': 'Swin-b + ArcFace on Time-Aware Closed Set - Head',    
             'body_part': 'head',
             'set': 'closed',
-            'seeds': [1, 2, 3, 4, 5, 6, 7],
+            'backbone': 'swin',
+            'head': 'arcface',
+            'optimizer': 'sgd',
+            'lr': 0.01,
+            'w_decay': 5e-4,
+            'seeds': [42],
+        },
+        {
+            'results_name': 'EXPERIMENT_3',
+            'description': 'Swin-b + AdaFace on Time-Aware Closed Set - Head',    
+            'body_part': 'head',
+            'set': 'closed',
+            'backbone': 'swin',
+            'head': 'adaface',
+            'optimizer': 'sgd',
+            'lr': 0.01,
+            'w_decay': 5e-4,
+            'seeds': [42],
+        },
+        {
+            'results_name': 'EXPERIMENT_4',
+            'description': 'ConvNeXt + ArcFace on Time-Aware Closed Set - Head',    
+            'body_part': 'head',
+            'set': 'closed',
+            'backbone': 'convnext',
+            'head': 'arcface',
+            'optimizer': 'adamw',
+            'seeds': [42],
+        },
+        {
+            'results_name': 'EXPERIMENT_5',
+            'description': 'ResNet50 + AdaFace on Time-Aware Closed Set - Head',    
+            'image_size': 224,
+            'body_part': 'head',
+            'set': 'closed',
+            'backbone': 'resnet50',
+            'head': 'adaface',
+            'optimizer': 'sgd',
+            'batch_size': 192,
+            'lr': 0.01,
+            'w_decay': 5e-4,
+            'seeds': [42],
+        },
+        {
+            'results_name': 'EXPERIMENT_6',
+            'description': 'ResNet50 + ArcFace on Time-Aware Closed Set - Head',    
+            'image_size': 224,
+            'body_part': 'head',
+            'set': 'closed',
+            'backbone': 'resnet50',
+            'head': 'arcface',
+            'optimizer': 'sgd',
+            'batch_size': 192,
+            'lr': 0.01,
+            'w_decay': 5e-4,
+            'seeds': [42],
         },
     ]
 
     for exp in experiments:
         print(f"Starting {exp['results_name']}...")
-        exp_config = config.copy()
         for seed in exp['seeds']:
-            exp_config.update({
-                'results_name': f"{exp['results_name']}_SEED_{seed}",
-                'description': exp['description'],
-                'body_part': exp['body_part'],
-                'set': exp['set'],
-                'seed': seed,
-            })
+            exp_config = config.copy()
+            exp_config.update(exp)
+            exp_config['results_name'] = f"{exp['results_name']}_SEED_{seed}"
+            exp_config['seed'] = seed
+            exp_config.pop('seeds', None)
             main(exp_config)
