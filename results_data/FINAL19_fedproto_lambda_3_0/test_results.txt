@@ -1,0 +1,39 @@
+Test Set Performance:
+Federated Re-Identification Test Set Results:
+Rank-1: 60.43%
+Rank-5: 71.82%
+mAP: 41.99%
+(Best Validation at Round 21)
+Final round: 26
+Configs: 
+{   'backbone': 'convnext',
+    'batch_size': 128,
+    'dataset_dir': './data/turtle-data',
+    'device': 'cuda',
+    'dropout': 0.2,
+    'early_stopping_patience': 5,
+    'embedding_dim': 512,
+    'eval_every': 1,
+    'federation_rounds': 50,
+    'h': 0.2,
+    'head': 'adaface',
+    'lambda_proto': 3.0,
+    'learning_rate': 0.0001,
+    'local_epochs': 5,
+    'm': 0.35,
+    'max_client_ratio': 0.4,
+    'max_points_eval': 2000,
+    'num_clients': 5,
+    'num_workers': 12,
+    'overlap_ratio': 0.1,
+    'persistent_workers': True,
+    'pin_memory': True,
+    'proto_momentum': 0.9,
+    'results_path': './results_data/FINAL19_fedproto_lambda_3_0',
+    's': 64.0,
+    'seed': 42,
+    'segment': 'head',
+    'split_mode': 'closed',
+    't_alpha': 0.01,
+    'warmup_rounds': 3,
+    'weight_decay': 0.0001}

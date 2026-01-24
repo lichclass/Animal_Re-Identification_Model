@@ -1,0 +1,44 @@
+Test Results using Encounter-Level (Embedding Average): Rank-1: 89.91 Rank-5: 92.66 mAP: 72.60
+
+Config:
+seed: 42
+download_data: False
+build_splits: False
+train: False
+verbose: False
+run_test: True
+test_results_dir: .\results_data\FINAL11_convnext_adaface_closed_head
+test_model_path: results_data\FINAL4_convnext_adaface_closed_head\best_model.pth
+test_method: emb_avg
+inspect_annotations: False
+inspect_metadata: False
+dataset_dir: data/turtle-data
+annotations: data/turtle-data/annotations.json
+metadata_splits: data/metadata_splits.csv
+results_path: results
+split_mode: closed
+segment: head
+backbone: convnext
+head: adaface
+embedding_dim: 512
+dropout: 0.2
+s: 64.0
+m: 0.35
+h: 0.2
+t_alpha: 0.01
+epochs: 1
+learning_rate: 0.0001
+early_stopping_patience: 5
+weight_decay: 0.0001
+warmup_epochs: 5
+warmup_rounds: 3
+federated: False
+num_clients: 3
+federated_rounds: 10
+lambda_proto: 1.0
+proto_momentum: 0.9
+overlap_ratio: 0.3
+eval_every: 1
+batch_size: 128
+num_workers: 4
+pin_memory: False
